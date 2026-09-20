@@ -1,0 +1,25 @@
+# Same vLLM/torch pairing as the extractor (see full_test_cot's own
+# requirements.txt for the full reasoning) — vllm==0.8.5 requires exactly
+# torch==2.6.0, verified via its own package metadata.
+#
+# No bitsandbytes here: the three judge models (4-8B parameters) fit
+# comfortably in bf16 on a single 24GB GPU without any quantization at
+# all — Gemma-3-4B ~8.6GB, DeepSeek-R1-Distill-Llama-8B / Granite-4.1-8B
+# ~16GB each. This sidesteps needing to find or trust an unofficial
+# AWQ/GPTQ checkpoint for models that (unlike Qwen3-32B) don't have one
+# published officially by their creators.
+vllm==0.8.5
+# 2026-08-28: transformers pinned explicitly after a real crash on
+# gemma-3-4b-it: "AttributeError: 'Gemma3TextConfig' object has no
+# attribute 'sliding_window_pattern'". Confirmed as a known, documented
+# incompatibility (huggingface/transformers#39290): transformers>=4.53.0
+# changed Gemma3's config format in a way vllm<=0.8.5.post1 does not
+# understand. 4.52.4 is the latest version before that break, still above
+# vllm==0.8.5's own floor (transformers>=4.51.1, verified via its package
+# metadata for the extractor pipeline).
+transformers==4.52.4
+huggingface_hub>=0.30.0,<1.0
+datasets==3.3.1
+tqdm==4.67.1
+colorlog==6.9.0
+python-dotenv==1.0.1

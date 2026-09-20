@@ -1,0 +1,8 @@
+data/
+slurm_logs/
+*.log
+*.jsonl
+.env
+.DS_Store
+
+__pycache__/
