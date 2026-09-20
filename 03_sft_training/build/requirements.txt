@@ -1,0 +1,25 @@
+# torch installato separatamente nel Dockerfile (pinnato a +cu124), non
+# qui — stesso pattern gia' usato per estrattore/giuria/bioner_eval.
+#
+# transformers/datasets/peft/trl lasciati deliberatamente senza versione
+# fissa ("upgrade to latest") — stesso approccio gia' confermato
+# funzionante nel notebook Kaggle che ha prodotto l'adapter
+# MedGemma-pretrain con successo. Pinnare a un numero specifico senza
+# averlo verificato per DAVVERO contro MedGemma ha gia' causato piu' di
+# un bug in questo stesso progetto (vedi jury/build/requirements.txt).
+transformers
+datasets
+huggingface_hub
+peft
+trl
+accelerate
+wandb
+
+# Pillow: MedGemma e' un modello multimodale (image-text-to-text) —
+# AutoProcessor cerca sempre il componente immagini anche per uso solo
+# testuale, e fallisce senza questa dipendenza (stesso problema gia'
+# risolto in bioner_eval/build/requirements.txt).
+Pillow
+
+numpy
+tqdm

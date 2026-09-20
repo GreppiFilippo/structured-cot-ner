@@ -1,0 +1,7 @@
+.DS_Store
+data/
+.venv/
+wandb/
+slurm_logs/
+work/
+.env
