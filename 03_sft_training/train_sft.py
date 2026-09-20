@@ -39,16 +39,16 @@ def measure_max_seq_length(dataset, processor, percentile: int = 99) -> int:
         lengths.append(n_tokens)
 
     lengths = np.array(lengths)
-    print(f"Lunghezze (token) su {len(lengths)} esempi di training:")
+    print(f"Lengths (tokens) over {len(lengths)} training examples:")
     for p in [50, 75, 90, 95, 99, 100]:
         print(f"  p{p}: {int(np.percentile(lengths, p))}")
-    print(f"  media: {lengths.mean():.0f}")
+    print(f"  mean: {lengths.mean():.0f}")
 
     p_val = int(np.percentile(lengths, percentile))
-    max_seq_length = 1 << (p_val - 1).bit_length()  # prossima potenza di 2
+    max_seq_length = 1 << (p_val - 1).bit_length()  # next power of 2
     n_truncated = int((lengths > max_seq_length).sum())
-    print(f"\nMAX_SEQ_LENGTH scelto: {max_seq_length} (copre il p{percentile}={p_val})")
-    print(f"Esempi oltre questa soglia (verranno troncati): {n_truncated} su {len(lengths)}")
+    print(f"\nMAX_SEQ_LENGTH chosen: {max_seq_length} (covers p{percentile}={p_val})")
+    print(f"Examples above this threshold (will be truncated): {n_truncated} out of {len(lengths)}")
     return max_seq_length
 
 
@@ -88,7 +88,7 @@ def execute_sft(model, processor, ds, max_seq_length, config, ckpt_dir: Path):
     if config.n_train_samples:
         train_ds = train_ds.select(range(min(config.n_train_samples, len(train_ds))))
     eval_ds = ds["validation"]
-    print(f"Training su {len(train_ds)} esempi, validazione su {len(eval_ds)}")
+    print(f"Training on {len(train_ds)} examples, validation on {len(eval_ds)}")
 
     lora_cfg = peft.LoraConfig(
         lora_alpha=config.lora_alpha,
@@ -101,7 +101,7 @@ def execute_sft(model, processor, ds, max_seq_length, config, ckpt_dir: Path):
 
     est_steps = max(1, len(train_ds) // (config.per_device_batch * config.grad_accum_steps)) * config.num_epochs
     effective_save = min(config.save_steps, max(1, est_steps // 3))
-    print(f"Passi stimati: {est_steps}, eval/save ogni: {effective_save}")
+    print(f"Estimated steps: {est_steps}, eval/save every: {effective_save}")
 
     # 2026-09-15: build the SFTConfig kwargs as a dict first, then filter
     # against what this installed trl version's SFTConfig actually
@@ -155,8 +155,8 @@ def execute_sft(model, processor, ds, max_seq_length, config, ckpt_dir: Path):
     accepted_params = set(inspect.signature(trl.SFTConfig.__init__).parameters)
     dropped = {k: v for k, v in sft_kwargs.items() if k not in accepted_params}
     if dropped:
-        print(f"[warn] Questa versione di trl.SFTConfig non supporta questi parametri, "
-              f"verranno ignorati: {sorted(dropped.keys())}")
+        print(f"[warn] This installed version of trl.SFTConfig does not support these "
+              f"parameters, they will be ignored: {sorted(dropped.keys())}")
     sft_kwargs = {k: v for k, v in sft_kwargs.items() if k in accepted_params}
 
     sft_args = trl.SFTConfig(**sft_kwargs)
@@ -176,9 +176,9 @@ def execute_sft(model, processor, ds, max_seq_length, config, ckpt_dir: Path):
                              key=lambda p: int(p.name.split("-")[-1]))
     resume = existing_ckpts[-1] if existing_ckpts else False
     if resume:
-        print(f"Ripresa dal checkpoint: {resume}")
+        print(f"Resuming from checkpoint: {resume}")
     else:
-        print("Nessun checkpoint trovato — training da zero.")
+        print("No checkpoint found — training from scratch.")
 
     trainer.train(resume_from_checkpoint=resume)
     return trainer
@@ -190,16 +190,16 @@ def save_adapter(trainer, processor, adapter_dir: Path, processor_dir: Path):
     processor.save_pretrained(str(processor_dir))
 
     adapter_files = list(adapter_dir.iterdir())
-    print(f"\nFile in adapter/: {[f.name for f in adapter_files]}")
+    print(f"\nFiles in adapter/: {[f.name for f in adapter_files]}")
     assert (adapter_dir / "adapter_config.json").exists(), (
-        "FATAL: adapter_config.json mancante — adapter NON salvato correttamente!")
+        "FATAL: adapter_config.json missing — adapter NOT saved correctly!")
     safetensors = [f for f in adapter_files if "adapter_model" in f.name]
     assert safetensors, (
-        "FATAL: adapter_model.safetensors mancante — adapter NON salvato correttamente!")
+        "FATAL: adapter_model.safetensors missing — adapter NOT saved correctly!")
     size_mb = safetensors[0].stat().st_size / 1e6
     assert size_mb < 500, (
-        f"FATAL: adapter da {size_mb:.0f} MB — e' stato salvato il modello intero, non un adapter!")
-    print(f"Adapter salvato correttamente ({size_mb:.1f} MB)")
+        f"FATAL: adapter is {size_mb:.0f} MB — the full model was saved instead of an adapter!")
+    print(f"Adapter saved correctly ({size_mb:.1f} MB)")
 
 
 def push_to_hub(adapter_dir: Path, processor_dir: Path, repo_id: str, hf_token: str, base_model_id: str):
@@ -240,7 +240,7 @@ model = model.merge_and_unload()
     )
     api.upload_folder(folder_path=str(adapter_dir), repo_id=repo_id, repo_type="model", token=hf_token)
     api.upload_folder(folder_path=str(processor_dir), repo_id=repo_id, repo_type="model", token=hf_token)
-    print("Caricamento completato.")
+    print("Upload complete.")
 
 
 class Config:
@@ -293,7 +293,7 @@ def main() -> None:
             project=os.environ.get("WANDB_PROJECT", "medgemma-cot-sft"),
             name="MedGemma-CoT-distilled",
         )
-        print(f"wandb attivo — progetto: {os.environ.get('WANDB_PROJECT', 'medgemma-cot-sft')}")
+        print(f"wandb active — project: {os.environ.get('WANDB_PROJECT', 'medgemma-cot-sft')}")
 
     config = Config(args)
     work_dir = Path(args.work_dir)
@@ -301,19 +301,19 @@ def main() -> None:
     adapter_dir = work_dir / "adapter"
     processor_dir = work_dir / "processor"
 
-    # --- 1. dati ---
+    # --- 1. data ---
     raw = datasets.load_dataset("json", data_files=args.data_path)["train"]
-    print(f"{len(raw)} esempi caricati da {args.data_path}")
+    print(f"{len(raw)} examples loaded from {args.data_path}")
     split = raw.train_test_split(test_size=args.validation_size, seed=config.random_seed)
     cot_ds = datasets.DatasetDict({"train": split["train"], "validation": split["test"]})
     print(f"Train: {len(cot_ds['train'])}  Validation: {len(cot_ds['validation'])}")
 
-    # --- 2. tokenizer per la misura delle lunghezze (prima di caricare il modello intero) ---
+    # --- 2. tokenizer for length measurement (before loading the full model) ---
     measure_processor = transformers.AutoProcessor.from_pretrained(args.base_model_id, use_fast=True)
     max_seq_length = measure_max_seq_length(cot_ds["train"], measure_processor)
     del measure_processor
 
-    # --- 3. modello ---
+    # --- 3. model ---
     processor = transformers.AutoProcessor.from_pretrained(args.base_model_id, use_fast=True)
     model = transformers.AutoModelForImageTextToText.from_pretrained(
         args.base_model_id, device_map="auto", dtype=torch.bfloat16,
@@ -326,19 +326,19 @@ def main() -> None:
     # --- 4. training ---
     trainer = execute_sft(model, processor, cot_ds, max_seq_length, config, ckpt_dir)
 
-    # --- 5. salvataggio ---
+    # --- 5. saving ---
     save_adapter(trainer, processor, adapter_dir, processor_dir)
 
-    # --- 6. caricamento su HF ---
+    # --- 6. upload to HF ---
     if not args.skip_push:
         push_to_hub(adapter_dir, processor_dir, args.hf_repo_id, hf_token, args.base_model_id)
 
-        # --- 7. verifica round-trip ---
+        # --- 7. round-trip verification ---
         del model
         gc.collect()
         torch.cuda.empty_cache()
 
-        print("\nVerifica round-trip: ricarico l'adapter da HF...")
+        print("\nRound-trip verification: reloading the adapter from HF...")
         base_model = transformers.AutoModelForImageTextToText.from_pretrained(
             args.base_model_id, device_map="auto", dtype=torch.bfloat16)
         ft_model = peft.PeftModel.from_pretrained(base_model, args.hf_repo_id, token=hf_token)
@@ -351,10 +351,10 @@ def main() -> None:
         with torch.inference_mode():
             out = ft_model.generate(**inputs, max_new_tokens=1024, do_sample=False)
         reply = processor.tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-        print("\n=== VERIFICA ROUND-TRIP ===")
+        print("\n=== ROUND-TRIP VERIFICATION ===")
         print(reply[:500])
 
-    print("\nFatto.")
+    print("\nDone.")
 
 
 if __name__ == "__main__":

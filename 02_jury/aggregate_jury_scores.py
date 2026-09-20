@@ -45,8 +45,10 @@ class AggregatedScore:
 
 def load_all_scores(paths: list[Path]) -> dict[str, list[dict]]:
     by_id: dict[str, list[dict]] = {}
+    n_parse_failed_total = 0
     for path in paths:
         n_rows = 0
+        n_parse_failed = 0
         for line_no, line in enumerate(path.read_text().splitlines(), start=1):
             if not line.strip():
                 continue
@@ -55,9 +57,26 @@ def load_all_scores(paths: list[Path]) -> dict[str, list[dict]]:
             except json.JSONDecodeError:
                 print(f"  [warn] {path}:{line_no} is not valid JSON, skipping")
                 continue
+            # 2026-09-02: rows the judge itself failed to parse (from
+            # merge_judge_parts.py, which keeps them by default as
+            # {"id":..., "parse_failed": true, "raw_response":...} —
+            # deliberately, so they're visible for review) have neither
+            # completeness_score nor correctness_score. Treat them as
+            # "this judge produced no usable verdict for this row" —
+            # same as the judge never having scored it at all — rather
+            # than crashing the whole aggregation on a missing key.
+            if row.get("parse_failed") or "completeness_score" not in row or "correctness_score" not in row:
+                n_parse_failed += 1
+                continue
             by_id.setdefault(row["id"], []).append(row)
             n_rows += 1
-        print(f"{path}: {n_rows} scores loaded")
+        n_parse_failed_total += n_parse_failed
+        print(f"{path}: {n_rows} scores loaded"
+              + (f" ({n_parse_failed} parse-failed rows skipped)" if n_parse_failed else ""))
+    if n_parse_failed_total:
+        print(f"[info] {n_parse_failed_total} parse-failed rows skipped in total across all files "
+              f"— those rows are treated as unscored by that judge, not excluded from the dataset entirely "
+              f"(they may still have valid verdicts from the other judges).")
     return by_id
 
 

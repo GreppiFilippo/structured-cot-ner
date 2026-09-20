@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.env
+outputs/
+*.jsonl
+.venv/
+*.log
+logs/
+slurm_logs/
+outputs/
+cache/
+*.err
+*.out

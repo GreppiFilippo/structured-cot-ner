@@ -1,0 +1,24 @@
+# 2026-08-04: pinned to vllm==0.8.5 after vllm==0.26.0 (latest) turned out to
+# require CUDA 12.8+/13 — above what this cluster's drivers support (12.5,
+# confirmed via nvidia-smi on moro232). Verified by inspecting vllm==0.8.5's
+# own package metadata directly: it requires torch==2.6.0 (exact pin — the
+# same version the tutors independently recommend for this hardware),
+# transformers>=4.51.1 (Qwen3 needs >=4.51.0), huggingface-hub>=0.30.0,
+# openai>=1.52.0. Also confirmed via a vLLM GitHub issue from Qwen3's launch
+# week: "vLLM v0.8.4 and higher natively supports all Qwen3 and Qwen3MoE
+# models" — so 0.8.5 is the earliest well-documented version that is both
+# CUDA-12.4-compatible and Qwen3-aware.
+#
+# huggingface_hub pinned explicitly below anyway, even though vllm's own
+# floor (>=0.30.0) would resolve fine unpinned — keeps this shard's pin
+# consistent with smoke_test_cot's, which needed the explicit upper bound
+# for a different (older) transformers version.
+vllm==0.8.5
+huggingface_hub>=0.30.0,<1.0
+datasets==3.3.1
+tqdm==4.67.1
+colorlog==6.9.0
+python-dotenv==1.0.1
+# 2026-08-13: bitsandbytes removed — no longer needed after switching to
+# Qwen3-32B-AWQ (see train.sh). AWQ's kernels are built into vLLM itself,
+# no separate package required to use an already-quantized checkpoint.

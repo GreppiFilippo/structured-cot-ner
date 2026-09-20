@@ -62,12 +62,13 @@ with resilience against node loss, server crashes, and job time limits.
 ```
 main_judge.py                  Entry point: one judge model scores one input file
 aggregate_jury_scores.py       Merges per-judge outputs into one verdict per row
+try_judge_combinations.py      Tries every judge-subset combination, reports how many rows would pass the quality threshold under each — used to diagnose whether one judge (or a specific pairing) is disproportionately responsible for a low pass rate
 src/
   config.py                    Config dataclass — all run parameters, per-judge notes
   judge_prompts.py             The jury prompt template + gold-span flattening
   judge_parser.py              Parses a judge's raw text response into a JudgeScore
   llm_client.py                Async OpenAI-compatible client (talks to vLLM), retries/backoff
-  circuit_breaker.py           Trips after too many consecutive failures (dead server)
+  circuit_breaker.py            Trips after too many consecutive failures (dead server)
   storage.py                   Append-only JSONL writer, resumable via already-processed ids
   hf_sync.py                   Periodic backup/recovery of output files to a HF dataset repo
 subset_tools/
@@ -235,6 +236,28 @@ signal worth averaging in. It is not a general-purpose "distrust this
 judge" switch; only use it for an axis with a confirmed, reproducible
 lack of variance.
 
+### 8. Diagnosing a low pass rate across every judge combination
+
+If the quality-filtered dataset ends up much smaller than expected, it's
+worth checking whether one judge (or one specific pairing) is
+disproportionately responsible, before concluding the extractor's output
+itself is at fault:
+
+```bash
+python3 try_judge_combinations.py \
+    outputs/jury_scores_gemma-3-4b-it.jsonl \
+    outputs/jury_scores_granite-4.1-8b.jsonl \
+    outputs/jury_scores_DeepSeek-R1-Distill-Llama-8B.jsonl \
+    --min-completeness 0.6 --min-correctness 0.6
+```
+
+Tries every non-empty combination of the three judges (each alone, every
+pair, all three together) and reports how many rows would pass the
+quality threshold under each — useful for telling apart "one judge is
+systematically too harsh" from "the judges disagree on which rows are
+good" (the latter shows up as a pairwise combination scoring *worse*
+than either judge alone, since the two rarely agree on the same rows).
+
 ## Resilience design
 
 The same three-layer design is used here as in the (separate) extractor
@@ -266,6 +289,14 @@ pipeline this project builds on:
   come from that model's own official card and genuinely differ — do
   not assume one hardcoded set works for all three (see `src/config.py`
   and `train_judge.sh` for the specific values and reasoning).
+- **Environment variables and Docker**: a container does not
+  automatically inherit the host shell's environment variables, only
+  whatever is explicitly passed via `-e`. `run_docker_judge.sh` forwards
+  every judge-specific variable (`JUDGE_TEMPERATURE`, `JUDGE_TOP_P`,
+  `JUDGE_TOP_K`, `JUDGE_MAX_TOKENS`, `VLLM_MAX_MODEL_LEN`) explicitly —
+  if you add a new configurable parameter to `train_judge.sh`, remember
+  to also add it to `run_docker_judge.sh`'s `-e` flags, or it will
+  silently fall back to its default with no error.
 
 ## Requirements
 
