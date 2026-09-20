@@ -1,6 +1,6 @@
 # UniversalMedNER — CoT Distillation for Open-Schema Biomedical NER
 
-Master's thesis project (DISI, University of Bologna). Builds an
+Bachelor's thesis project (DISI, University of Bologna). Builds an
 open-schema Named Entity Recognition pipeline that distills explicit
 Chain-of-Thought reasoning — not just final labels — from a large
 teacher model into a compact, deployable student (MedGemma-4B),
@@ -56,8 +56,6 @@ Pile-NER (open-schema text spans)
 | `02_jury/` | Multi-judge quality scoring of the extracted reasoning | [README](02_jury/README.md) |
 | `03_sft_training/` | LoRA fine-tuning of the student model | [README](03_sft_training/README.md) |
 | `04_evaluation/` | Evaluation on 9 biomedical NER benchmarks | [README](04_evaluation/README.md) |
-| `notebooks/` | Kaggle/Colab notebooks (used where SLURM/Docker access wasn't available or convenient — e.g. Gemma judge scoring worked around a vLLM-specific bug this way) | — |
-| `docs/troubleshooting.md` | Real infrastructure problems hit during this project and how they were diagnosed/fixed | [docs/troubleshooting.md](docs/troubleshooting.md) |
 
 ## Running order
 
@@ -82,7 +80,3 @@ Each stage's own README has full setup/run instructions (Docker build,
   (see each folder's `.env.example`) — never commit a real `.env`.
 - Data and model weights are **not** stored in this repository — see
   each stage's README for the relevant Hugging Face dataset/model repo.
-
-## License
-
-<!-- TODO: add license -->
