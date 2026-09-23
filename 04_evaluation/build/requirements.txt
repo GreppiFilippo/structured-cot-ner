@@ -1,0 +1,67 @@
+# torch installed separately in the Dockerfile (pinned to +cu124), not
+# here — same pattern as the extractor/jury Dockerfiles, avoids resolver
+# conflicts between an explicit torch pin and everything else.
+#
+# All versions below pinned per the tutor's standard lab list, for
+# reproducibility — with two deliberate exceptions, explained inline.
+
+# 2026-08-30, third revision: NOT pinned to 4.52.4 either (my own earlier
+# choice) — that number was borrowed from the jury/ pipeline, where it
+# exists specifically to stay below vLLM's Gemma3TextConfig incompatibility
+# ceiling (>=4.53.0). This pipeline never touches vLLM, so that ceiling
+# was never actually relevant here — importing it was a mistake, not a
+# validated choice for this project. Confirmed by a real crash: 4.52.4
+# parses google/medgemma-1.5-4b-it's config fine, but fails serializing
+# it for a debug log line ("TypeError: Object of type dtype is not JSON
+# serializable" inside Transformers' own config repr/logging code) — a
+# minor version-specific bug, not a fundamental incompatibility.
+# The one config actually confirmed to fully work with this exact
+# checkpoint is whatever bioner-evaluation-fix.ipynb's own unpinned
+# "--upgrade transformers" resolved to on Kaggle — that notebook is the
+# direct source of every real result already analyzed for this thesis.
+# Left unpinned here to match that known-working setup, rather than
+# guessing at another specific number without direct evidence.
+transformers
+
+# 2026-08-30: NOT pinned to the tutor's suggested 3.3.1, for a second,
+# different reason than transformers above. The eval subset dataset
+# (filippogreppi/bioner-eval-subset) was built and pushed from Colab,
+# where `datasets` was installed unpinned (whatever was latest at build
+# time) — that version wrote the parquet files' embedded Arrow schema
+# metadata in a format that datasets==3.3.1 cannot parse back: a real
+# crash confirmed here ("TypeError: must be called with a dataclass type
+# or instance" inside Features.from_dict, reading the parquet's own
+# embedded schema, not a stale cache — cache was already ruled out).
+# Newer datasets readers can generally parse older schema formats, but
+# not the reverse, so leaving this unpinned (matching whatever built the
+# file) is the safe direction, not pinning older.
+datasets
+
+colorlog==6.9.0
+wandb==0.19.7
+einops==0.8.0
+python-dotenv==1.0.1
+sentence-transformers==3.4.1
+pretty-errors==1.2.25
+
+# 2026-08-30: added — missing from the tutor's list but required by
+# transformers' device_map="auto" (used when loading MedGemma in
+# evaluate.py); from_pretrained(..., device_map=...) raises ImportError
+# without it.
+accelerate==1.4.0
+
+# Pillow: MedGemma is a multimodal (image-text-to-text) model —
+# AutoProcessor.from_pretrained(..., backend="torchvision") always tries
+# to load its image-processor component too, even for text-only NER use,
+# and fails without it. (torchvision itself is installed in the
+# Dockerfile, pinned to match torch==2.6.0+cu124 — not here, to avoid
+# pip resolving an incompatible/non-CUDA build.) Missed on the first
+# pass; caught by a real "Could not load any image processor class" crash.
+Pillow
+
+huggingface_hub
+sacremoses
+scipy
+peft
+tqdm
+pandas
