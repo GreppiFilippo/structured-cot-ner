@@ -26,12 +26,16 @@ Samples 500 rows (deterministic, seed 42) from each of the 9 source
 datasets — ncbi, bc5cdr, bc2gm, bc4chemd, AnatEM, JNLPBA, JNLPBA-Rare
 (465 rows, smaller source split), MedMentions-Rare, biored — and pushes
 a private dataset repo with one config per dataset. Each row carries
-two things: `messages`, a closed-schema prompt (a fixed list of gold
-entity types injected per row) used for the baseline and label-only
-models, and `raw_text`, the underlying span text on its own, used to
-build the open-schema prompt for the CoT model. Re-running with the
-same seed reproduces the exact same rows — verified directly against a
-backup of an earlier version of the subset, row for row identical.
+three things: `messages`, a closed-schema prompt (a list of entity types
+per row — some real, some sampled distractors) whose assistant turn is
+the gold for the baseline and label-only models; `raw_text`, the
+underlying text on its own, used to build the open-schema prompt for the
+CoT model; and `all_gold`, every annotated span of the row (all types,
+JSON string), which is the gold for the CoT model. Re-running with the
+same seed reproduces the exact same rows, and before pushing the script
+checks that every rebuilt prompt is identical to the version already on
+the Hub (it refuses to push otherwise, unless `--force`) — so re-running
+it to add a column never changes what the models are evaluated on.
 
 ## 2. Evaluate one (model, dataset) pair
 
@@ -49,15 +53,15 @@ sbatch -N 1 --gpus=nvidia_geforce_rtx_3090:1 -w faretra --export=ALL \
 sbatch -N 1 --gpus=nvidia_geforce_rtx_3090:1 -w faretra --export=ALL \
     --output=slurm_logs/eval_cot_ncbi_%j.out \
     --error=slurm_logs/eval_cot_ncbi_%j.err \
-    run_docker_eval.sh "cot" "ncbi" --max-new-tokens 5012
+    run_docker_eval.sh "cot" "ncbi" --max-new-tokens 5120
 ```
 
 Repeat for each of the 9 datasets and 3 model types (27 jobs total).
 Each job skips itself automatically if `outputs/<dataset>/<model>/metrics.json`
 already exists — safe to re-submit after an interruption. `--max-new-tokens`
 should be set generously for `cot` (the model produces a full reasoning
-trace before its JSON answer, not just a short answer; 5012 was used for
-the reported results) — the other two model types default to 1536,
+trace before its JSON answer, not just a short answer — the reported
+results used 5012) — the other two model types default to 1536,
 already raised from an original 512 after truncation was observed on
 the baseline model's own reasoning preamble.
 
@@ -67,7 +71,21 @@ Output per (model, dataset) pair, under `outputs/<dataset>/<pre_sft|post_sft|pos
 - `predictions.jsonl` — every row's gold, parsed prediction, and raw model output
 - `worst_examples.md` — the 10 lowest-F1 rows, for qualitative inspection
 
-## 3. Aggregate into the final comparison table
+## 3. Re-score existing runs (CPU only)
+
+```bash
+python3 rescore.py
+```
+
+Recomputes every `metrics.json` from its `predictions.jsonl` with the
+current parser and metric (`src/metrics.py`), without loading any model.
+Run it whenever the metric changes (`METRIC_VERSION` in
+`src/metrics.py`), so all 27 runs are scored by exactly the same code no
+matter when they were generated. The previous `metrics.json` is kept once
+as `metrics_before_rescore.json`. Re-scoring the CoT runs needs the
+subset's `all_gold` column (rebuild the subset first, step 1).
+
+## 4. Aggregate into the final comparison table
 
 ```bash
 python3 aggregate_results_3way.py
@@ -75,9 +93,11 @@ cat comparison_table.csv
 ```
 
 Writes `all_results.json` (everything found) and `comparison_table.csv`
-(one row per dataset, with baseline/label-only/CoT F1 and deltas against
-baseline). Safe to run before all 27 jobs finish — missing cells are
-left blank rather than crashing.
+(one row per dataset: type-agnostic F1/P/R for all three models, deltas
+against baseline, plus type-exact F1 for baseline and label-only). Safe to
+run before all 27 jobs finish — missing cells are left blank rather than
+crashing. It warns about any run scored with an older metric version, or
+a CoT run not scored against `all_gold` — run `rescore.py` for those.
 
 ## The CoT model needs its own prompt AND its own metric — two real bugs, both fixed
 
@@ -99,26 +119,51 @@ list of dicts) — confirmed directly: a real run with the wrong parser
 showed apparently-empty extractions on output that, inspected raw,
 contained a complete and correct reasoning trace and JSON block.
 `CoTPredictionParser` handles the real shape correctly, grouping
-entities by their (freely chosen) label.
+entities by their (freely chosen) label, and takes the last JSON object
+with an `entities` key (the answer always follows the reasoning).
+
+**Gold**: the closed-schema gold in `messages` only covers the entity
+types sampled into that row's prompt — possibly none of the real ones,
+since the number of real types per prompt is drawn at random from 0 up.
+That is the right gold for baseline/label-only, which are only asked
+about those types. The CoT model is not told any types and extracts
+everything, so against that gold every real entity of an unsampled type
+would count as a false positive. It is scored against `all_gold` instead
+(`src/metrics.select_gold`); `evaluate.py --model-type cot` refuses to
+run on a subset without that column. Even with the full gold, the CoT
+model can still extract entity kinds that a benchmark never annotates
+(e.g. genes in ncbi, which only annotates diseases) — those still count
+as false positives, so its recall is the easier number to interpret.
 
 **Metric**: because the CoT model is open-schema, it invents its own
 type names, which rarely match the closed-schema gold vocabulary of
 these benchmarks exactly (`BiologicalEntity` vs.\ the gold `DISEASE`,
 for the same correctly-identified span). `evaluate.py` reports two
 numbers in every `metrics.json`:
-- `F1_micro` — type-exact, the original metric, comparable across all
-  three models but unfairly harsh on the CoT model specifically
-- `F1_micro_type_agnostic` — same IoU + Hungarian-assignment matching,
-  but spans are pooled across types before matching, so a correct span
-  under a different (but reasonable) type name still counts. This is
-  the metric to read for the `cot` model; `aggregate_results_3way.py`
-  already uses it for that column specifically, and leaves the other
-  two columns on the type-exact metric.
+- `F1_micro` — type-exact: IoU + Hungarian matching within each type,
+  type names must match. Meaningful for baseline and label-only, near
+  zero by construction for the CoT model.
+- `F1_micro_type_agnostic` — same matching, but spans are pooled across
+  types first, so a correct span under a different type name still
+  counts. This is the only metric computed the same way for all three
+  models, so `aggregate_results_3way.py` uses it for every headline
+  column and every delta (earlier versions compared the CoT model's
+  type-agnostic F1 against the other two models' type-exact F1).
+
+Metric version 2 (2026-09-24, see `src/metrics.py`) changed three things
+for all models alike: span tokens are word characters only, so
+punctuation spacing no longer matters (gold spans are space-joined IOB
+tokens like `"( CD25 )"`, while the text shown to the model is
+detokenized, `"(CD25)"`); repeated spans are de-duplicated within a
+type; and reasoning blocks (`<think>…</think>`, MedGemma's
+`<unused94>thought…<unused95>`) are stripped before parsing, so a JSON
+draft written while reasoning is never taken as the answer.
 
 ## Known result and open question
 
-See the top-level README's Results Summary for the full table. In
-short: CoT distillation clearly corrects the severe overfitting seen in
+The summary below predates metric version 2 and the CoT
+gold fix — re-check it against `comparison_table.csv` after re-scoring.
+In short: CoT distillation clearly corrects the severe overfitting seen in
 the label-only model on some datasets (e.g.\ bc2gm, AnatEM), but does
 not on average beat the zero-shot baseline across the 9 datasets. Not
 yet confirmed experimentally, but plausible: the teacher's reasoning
@@ -131,9 +176,11 @@ own zero-shot baseline already carries strong biomedical-domain priors
 ```
 build_eval_subset.py       Builds the fixed 500-row-per-dataset subset, pushes to HF
 evaluate.py                 Evaluates one (model, dataset) pair
+rescore.py                  Recomputes metrics from existing predictions.jsonl (no GPU)
 aggregate_results_3way.py   Aggregates all metrics.json into one comparison table
 aggregate_results.py        Older 2-way (baseline/pretrain only) version — superseded
 sanity_check.py              Quick qualitative smoke test on a handful of rows
+src/metrics.py               Reply cleaning, parsers, gold selection, IoU/Hungarian scoring
 src/prompts.py               FreeCoTPromptBuilder — verbatim copy of the training-time
                              open-schema prompt, used only for --model-type cot
 run_docker_eval.sh            Wraps evaluate.py in docker run with the right GPU/cache mounts

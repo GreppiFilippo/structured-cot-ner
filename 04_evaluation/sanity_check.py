@@ -28,11 +28,11 @@ from evaluate import (
     BASE_MODEL_ID,
     SUBSET_REPO_ID_DEFAULT,
     BatchInferencer,
-    PredictionParser,
     load_baseline,
     load_pretrain,
     unload_model,
 )
+from src.metrics import PredictionParser
 
 
 def main() -> None:

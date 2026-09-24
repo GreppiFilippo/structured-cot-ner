@@ -202,6 +202,15 @@ class SFTDataProcessor:
             entities=json.dumps(entity_list, ensure_ascii=False),
         )
         return {
+            # 2026-09-24: "all_gold" — every annotated span of the row,
+            # all types, as a JSON string {TYPE: [span, ...]}. "messages"
+            # only holds the gold for the types sampled into this row's
+            # prompt (possibly none), which is the right gold for the
+            # closed-schema models but not for the open-schema CoT model,
+            # which extracts every entity it finds (see
+            # src/metrics.select_gold). Computed before any rng draw, so
+            # adding it changes nothing else in the row.
+            "all_gold": json.dumps(spans, ensure_ascii=False),
             # 2026-09-21: "raw_text" added alongside the existing
             # "messages" field — NOT a replacement. "messages" is left
             # completely untouched (baseline/pretrain must keep using
@@ -262,18 +271,42 @@ def load_and_prepare(dataset_id, split_mode, token_field, tag_field,
     return proc.fit_transform(raw)
 
 
+def matches_existing(repo_id, ds_name, subset):
+    """True if the Hub has no version of this dataset yet, or if its rows
+    have exactly the same prompts (messages) as the rebuilt subset — so
+    re-running this script to add a column never changes what the models
+    are evaluated on."""
+    try:
+        existing = datasets.load_dataset(repo_id, data_files={"test": f"{ds_name}/test-*"})["test"]
+    except Exception as error:
+        print(f"  No existing version of {ds_name} found on the Hub ({type(error).__name__}), nothing to compare.")
+        return True
+    same = len(existing) == len(subset) and existing["messages"] == subset["messages"]
+    print(f"  Existing {ds_name} on the Hub: {len(existing)} rows, prompts "
+          f"{'identical' if same else 'DIFFERENT'} to the rebuilt ones.")
+    return same
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--n-per-dataset", type=int, default=500,
                          help="Rows to sample from each dataset's test split (capped at the split's own size if smaller)")
     parser.add_argument("--repo-id", type=str, required=True, help="e.g. yourname/bioner-eval-subset")
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
+    parser.add_argument("--save-dir", type=str, default=None,
+                         help="Also save each dataset's subset locally to <save-dir>/<dataset> "
+                              "(datasets.save_to_disk) — usable with rescore.py --subset-dir")
+    parser.add_argument("--no-push", action="store_true",
+                         help="Build (and check/save) only, do not push anything to the Hub")
+    parser.add_argument("--force", action="store_true",
+                         help="Push even if the rebuilt rows' prompts differ from the version already on the Hub")
     args = parser.parse_args()
 
-    from huggingface_hub import HfApi
-    api = HfApi()
-    api.create_repo(repo_id=args.repo_id, repo_type="dataset", private=True, exist_ok=True)
-    print(f"Repo {args.repo_id!r} ready (private).")
+    if not args.no_push:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        api.create_repo(repo_id=args.repo_id, repo_type="dataset", private=True, exist_ok=True)
+        print(f"Repo {args.repo_id!r} ready (private).")
 
     for ds_id, split_mode, tok_field, tag_field in BIONER_DATASETS:
         ds_name = ds_id.split("/")[-1]
@@ -292,10 +325,20 @@ def main() -> None:
 
         print(f"  {len(test_split)} test rows available, sampled {n} (fixed indices, seed={args.seed})")
 
-        subset.push_to_hub(args.repo_id, config_name=ds_name, private=True)
-        print(f"  Pushed to {args.repo_id} as config '{ds_name}'")
+        if not args.force and not matches_existing(args.repo_id, ds_name, subset):
+            raise SystemExit(
+                f"  {ds_name}: the rebuilt prompts differ from the ones already on {args.repo_id} — "
+                f"pushing would silently change the evaluation set that existing results were computed "
+                f"on. Nothing was pushed for this dataset. Pass --force only if that is intended.")
 
-    print(f"\nDone. All 9 subsets pushed to https://huggingface.co/datasets/{args.repo_id}")
+        if args.save_dir:
+            subset.save_to_disk(f"{args.save_dir}/{ds_name}")
+            print(f"  Saved to {args.save_dir}/{ds_name}")
+        if not args.no_push:
+            subset.push_to_hub(args.repo_id, config_name=ds_name, private=True)
+            print(f"  Pushed to {args.repo_id} as config '{ds_name}'")
+
+    print("\nDone." + ("" if args.no_push else f" All 9 subsets pushed to https://huggingface.co/datasets/{args.repo_id}"))
 
 
 if __name__ == "__main__":

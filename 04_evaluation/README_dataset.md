@@ -49,20 +49,31 @@ ready-to-use chat-format prompt:
 | `MedMentions-Rare` | [disi-unibo-nlp/MedMentions-Rare](https://huggingface.co/datasets/disi-unibo-nlp/MedMentions-Rare) | 500 |
 | `biored` | [disi-unibo-nlp/biored](https://huggingface.co/datasets/disi-unibo-nlp/biored) | 500 |
 
-Each row is a single split (`test`) with one column, `messages`: a
-3-turn chat (`system`, `user`, `assistant`) in the exact format expected
-by MedGemma's chat template. The `assistant` turn holds the gold-standard
-answer (JSON object mapping entity types to verbatim text spans) used as
-ground truth during evaluation — **not** meant to be shown to the model
-at inference time (drop the last turn before generating).
+Each config has a single split (`test`) with three columns:
+
+- `messages`: a 3-turn chat (`system`, `user`, `assistant`) in the exact
+  format expected by MedGemma's chat template. The `user` turn asks for a
+  list of entity types (some present in the text, some sampled
+  distractors); the `assistant` turn holds the gold answer for exactly
+  those types (JSON object mapping entity types to text spans) — **not**
+  meant to be shown to the model at inference time (drop the last turn
+  before generating).
+- `raw_text`: the detokenized text on its own, for building other prompts
+  (e.g. an open-schema one) over the same rows.
+- `all_gold`: every annotated span of the row, for all entity types, as a
+  JSON string `{TYPE: [span, ...]}` — the gold for a model that is not
+  given a list of types.
+
+Gold spans are the IOB tokens joined by single spaces (e.g. `( CD25 )`),
+so they can differ from `raw_text` in punctuation spacing; compare them
+on word tokens, not as raw strings.
 
 ## How the subset was built
 
 - 500 rows sampled per dataset (or the full test set, if smaller — see
   `JNLPBA-Rare` above), using a fixed random seed (`42`) over row indices.
-- For datasets without pre-existing validation/test splits, an 95/5
-  train/test split was applied (same seed), matching the split logic used
-  during the model's own fine-tuning.
+- Every source dataset already ships a `test` split, which is used
+  as-is (no re-splitting).
 - Prompts were built with the same `SFTDataProcessor` / `IOBSpanExtractor`
   / entity-distractor-sampling logic used to prepare the SFT training
   data — reused verbatim, not reimplemented, to avoid any drift between
