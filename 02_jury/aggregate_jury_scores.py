@@ -17,10 +17,15 @@ so that axis is still included. Not a general-purpose per-judge filter for
 arbitrary distrust — only for a score axis with a confirmed, tested,
 reproducible lack of variance.
 
+2026-09-24: that 0.00 pattern did NOT hold on the full 43k-row run —
+Granite's completeness varies normally there and correlates best of the
+three judges with objective gold coverage (see README), so it should not
+be excluded. Until this date the flag also never matched anything (the
+files store the full HF id, not the short name), so the actual SFT
+selection used all three judges on both axes.
+
 Usage:
     python3 aggregate_jury_scores.py outputs/jury_scores_*.jsonl
-    python3 aggregate_jury_scores.py outputs/jury_scores_*.jsonl \
-        --exclude-completeness-from granite-4.1-8b
 """
 from __future__ import annotations
 
@@ -80,12 +85,21 @@ def load_all_scores(paths: list[Path]) -> dict[str, list[dict]]:
     return by_id
 
 
+def judge_key(judge_model: str) -> str:
+    """Normalizes a judge name so every spelling of the same judge compares
+    equal: main_judge.py stores the full HF id ("ibm-granite/granite-4.1-8b"),
+    the Colab/Kaggle notebooks a short display name ("granite-4.1-8b"), and
+    output filenames replace dots with dashes ("granite-4-1-8b")."""
+    return judge_model.split("/")[-1].replace(".", "-").lower()
+
+
 def aggregate(
     by_id: dict[str, list[dict]], disagreement_threshold: float, exclude_completeness_from: set[str]
 ) -> list[AggregatedScore]:
+    excluded_keys = {judge_key(j) for j in exclude_completeness_from}
     results = []
     for record_id, scores in by_id.items():
-        compl_scores = [s for s in scores if s["judge_model"] not in exclude_completeness_from]
+        compl_scores = [s for s in scores if judge_key(s["judge_model"]) not in excluded_keys]
         compl = [s["completeness_score"] for s in compl_scores]
         correct = [s["correctness_score"] for s in scores]  # never filtered — correctness is unaffected
         stdev_compl = statistics.stdev(compl) if len(compl) > 1 else 0.0
@@ -110,8 +124,8 @@ def main() -> None:
     parser.add_argument("--disagreement-threshold", type=float, default=0.3)
     parser.add_argument("--exclude-completeness-from", nargs="*", default=[],
                          help="judge_model name(s) whose completeness_score should be dropped from the "
-                              "mean — their correctness_score is still included normally. Match the "
-                              "display_name used when that judge ran (e.g. 'granite-4.1-8b').")
+                              "mean — their correctness_score is still included normally. Full HF id, "
+                              "short name or filename form all work (e.g. 'granite-4.1-8b').")
     args = parser.parse_args()
 
     paths = [Path(p) for p in args.score_paths]
@@ -119,6 +133,11 @@ def main() -> None:
     exclude_set = set(args.exclude_completeness_from)
     if exclude_set:
         print(f"Excluding completeness_score from: {sorted(exclude_set)} (correctness_score still included)")
+        seen_judges = {judge_key(s["judge_model"]) for scores in by_id.values() for s in scores}
+        unmatched = {j for j in exclude_set if judge_key(j) not in seen_judges}
+        if unmatched:
+            raise SystemExit(f"--exclude-completeness-from {sorted(unmatched)} matches none of the judges "
+                             f"in the input files ({sorted(seen_judges)}) — nothing would be excluded.")
 
     n_missing_judges = sum(1 for scores in by_id.values() if len(scores) < len(paths))
     if n_missing_judges:

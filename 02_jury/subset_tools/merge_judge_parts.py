@@ -95,8 +95,7 @@ def main() -> None:
 
     print(f"\nProssimo passo — combina con i file jury_scores_<judge>.jsonl degli altri due giudici:")
     print(f"  python3 aggregate_jury_scores.py jury_scores_<giudice1>.jsonl jury_scores_<giudice2>.jsonl "
-          f"jury_scores_<giudice3>.jsonl \\")
-    print(f"      --exclude-completeness-from granite-4.1-8b  # se necessario")
+          f"jury_scores_<giudice3>.jsonl")
 
 
 if __name__ == "__main__":

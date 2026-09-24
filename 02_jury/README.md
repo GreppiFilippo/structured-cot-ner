@@ -208,8 +208,7 @@ Once every judge has a complete (or merged) output file:
 python3 aggregate_jury_scores.py \
     outputs/jury_scores_gemma-3-4b-it.jsonl \
     outputs/jury_scores_DeepSeek-R1-Distill-Llama-8B.jsonl \
-    outputs/jury_scores_granite-4.1-8b.jsonl \
-    --exclude-completeness-from granite-4.1-8b
+    outputs/jury_scores_granite-4-1-8b.jsonl
 ```
 
 Writes `outputs/jury_scores_aggregated.jsonl`, one row per id:
@@ -217,7 +216,7 @@ Writes `outputs/jury_scores_aggregated.jsonl`, one row per id:
 ```json
 {
   "id": "ner_1",
-  "n_judges_completeness": 2,
+  "n_judges_completeness": 3,
   "n_judges_correctness": 3,
   "mean_completeness": 0.83,
   "mean_correctness": 1.0,
@@ -227,14 +226,25 @@ Writes `outputs/jury_scores_aggregated.jsonl`, one row per id:
 }
 ```
 
-`--exclude-completeness-from` drops a named judge's `completeness_score`
-from the mean (its `correctness_score` is still included normally). This
-exists specifically for `granite-4.1-8b`, whose `completeness_score`
-came back as exactly `0.00` across every tested row in two separate real
-test rounds — zero variance across genuinely different inputs carries no
-signal worth averaging in. It is not a general-purpose "distrust this
-judge" switch; only use it for an axis with a confirmed, reproducible
-lack of variance.
+`--exclude-completeness-from <judge>` drops that judge's
+`completeness_score` from the mean (its `correctness_score` is still
+included). It was added for `granite-4.1-8b`, whose completeness came
+back as exactly `0.00` on the first 15 test rows — **do not use it for
+Granite on the full run**. On the full 43k-row output Granite's
+completeness varies normally and is the judge that agrees best with an
+objective measure (share of gold spans found among the extracted
+entities): correlation +0.66, against +0.40 for DeepSeek and +0.09 for
+Gemma. Until 2026-09-24 the flag silently excluded nothing (it compared
+the short name against the full HF id stored in the files), so the SFT
+training set was in fact built with all three judges on both axes.
+
+**Known judge-quality issue — Gemma**: on the full run Gemma-3-4B's
+scores carry almost no signal. Its completeness barely correlates with
+objective coverage (+0.09) or with the other judges (+0.07/+0.11), and
+its correctness averages 0.17 on rows with no extra entities, where the
+rubric prescribes exactly 1.0. Averaging it in mostly lowers every
+row's mean. See `try_judge_combinations.py` to compare selections with
+and without it.
 
 ### 8. Diagnosing a low pass rate across every judge combination
 

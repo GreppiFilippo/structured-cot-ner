@@ -24,9 +24,20 @@ def parse_judge_response(record_id: str, judge_model: str, raw: str) -> Optional
     """Same layered fallback as the production extractor's parser: try a
     fenced ```json block first, then a bare-JSON parse of the whole text,
     then a balanced-brace scan — a judge model can have the same
-    formatting quirks as the extractor model did."""
-    think_block = re.search(r"<think>.*?</think>", raw, re.DOTALL)
-    visible = raw[think_block.end():].strip() if think_block else raw.strip()
+    formatting quirks as the extractor model did.
+
+    Only the text after the LAST </think> is the answer. DeepSeek-R1-Distill's
+    chat template already puts the opening <think> in the prompt, so its
+    output has a closing tag with no opening one (99.9% of real DeepSeek
+    scores) — searching for a full <think>...</think> pair never matched, and
+    the JSON was then looked for inside the reasoning too. An opening tag with
+    no closing one means the reasoning was cut off: no answer at all."""
+    if "</think>" in raw:
+        visible = raw.rsplit("</think>", 1)[1].strip()
+    elif "<think>" in raw:
+        return None
+    else:
+        visible = raw.strip()
 
     payload = None
     fenced = re.search(r"```json\s*(\{.*?\})\s*```", visible, re.DOTALL)

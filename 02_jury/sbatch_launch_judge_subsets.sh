@@ -79,4 +79,4 @@ echo "  python3 subset_tools/merge_judge_parts.py outputs/jury_scores_<giudice>_
 echo "      --output outputs/jury_scores_<giudice>.jsonl"
 echo ""
 echo "Poi, con tutti e tre i giudici uniti, aggrega come al solito:"
-echo "  python3 aggregate_jury_scores.py outputs/jury_scores_*.jsonl --exclude-completeness-from granite-4.1-8b"
+echo "  python3 aggregate_jury_scores.py outputs/jury_scores_*.jsonl"
