@@ -14,6 +14,13 @@ Usage:
     python3 evaluate.py --model-type pretrain --dataset-name bc5cdr
     python3 evaluate.py --model-type cot --dataset-name ncbi --max-new-tokens 5120
     python3 evaluate.py --model-type cot_typed --dataset-name ncbi --max-new-tokens 5120
+
+    # any causal LM (e.g. Qwen3) with the baseline's closed-schema prompt,
+    # optionally with a LoRA adapter; results in outputs/<dataset>/<run-name>/
+    python3 evaluate.py --model-type causal --model-id Qwen/Qwen3-4B --run-name qwen3-4b_base \
+        --dataset-name ncbi --max-new-tokens 8192 --do-sample
+    python3 evaluate.py --model-type causal --model-id Qwen/Qwen3-4B --adapter yourname/Qwen3-4B-openvocab-cot \
+        --run-name qwen3-4b_sft --dataset-name ncbi --max-new-tokens 8192 --do-sample
 """
 from __future__ import annotations
 
@@ -41,14 +48,19 @@ SUBSET_REPO_ID_DEFAULT = "filippogreppi/bioner-eval-subset"
 # because resume-skip and the aggregate scripts look them up by name
 SUBFOLDERS = {"baseline": "pre_sft", "pretrain": "post_sft", "cot": "post_sft_cot", "cot_typed": "post_sft_cot_typed"}
 
-_PADDING_TOKEN_RE = re.compile(r"<(?:pad|eos|bos)>")
+_PADDING_TOKEN_RE = re.compile(r"<(?:pad|eos|bos)>|<\|endoftext\|>")
+_END_OF_TURN_RE = re.compile(r"<end_of_turn>|<\|im_end\|>")
 
 
 class BatchInferencer:
-    def __init__(self, model, processor, max_new_tokens=512):
+    def __init__(self, model, processor, max_new_tokens=512, generation_kwargs=None):
+        """processor: MedGemma's AutoProcessor or a plain tokenizer (causal LMs).
+        generation_kwargs: defaults to greedy decoding (the setting of every
+        MedGemma run); pass sampling parameters for thinking models."""
         self._model, self._processor = model, processor
         self._max_new_tokens = max_new_tokens
-        tok = getattr(processor, "tokenizer", processor)
+        self._generation_kwargs = generation_kwargs or {"do_sample": False}
+        self._tok = tok = getattr(processor, "tokenizer", processor)
         tok.padding_side = "left"
         if tok.pad_token_id is None and tok.eos_token_id is not None:
             tok.pad_token = tok.eos_token
@@ -74,11 +86,12 @@ class BatchInferencer:
 
         try:
             with torch.inference_mode():
-                outputs = self._model.generate(**inputs, max_new_tokens=self._max_new_tokens, do_sample=False)
+                outputs = self._model.generate(**inputs, max_new_tokens=self._max_new_tokens,
+                                               pad_token_id=self._tok.pad_token_id, **self._generation_kwargs)
             input_len = inputs.input_ids.shape[1]
             new_tokens = outputs[:, input_len:]
-            replies = self._processor.tokenizer.batch_decode(new_tokens, skip_special_tokens=False)
-            return [_PADDING_TOKEN_RE.sub("", r.split("<end_of_turn>")[0]).strip() for r in replies]
+            replies = self._tok.batch_decode(new_tokens, skip_special_tokens=False)
+            return [_PADDING_TOKEN_RE.sub("", _END_OF_TURN_RE.split(r)[0]).strip() for r in replies]
         finally:
             del inputs
             if "outputs" in locals():
@@ -127,6 +140,22 @@ def load_cot_distilled(hf_token, verbose=False):
     return _load_adapter(COT_DISTILLED_PATH, hf_token, verbose)
 
 
+def load_causal(model_id, adapter=None, hf_token=None, load_in_4bit=False):
+    """Any causal LM (e.g. Qwen3), optionally with a LoRA adapter merged in."""
+    kwargs = {"device_map": "auto", "dtype": torch.bfloat16, "token": hf_token}
+    if load_in_4bit:
+        kwargs["quantization_config"] = transformers.BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(adapter or model_id, token=hf_token)
+    model = transformers.AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
+    if adapter:
+        model = peft.PeftModel.from_pretrained(model, adapter, token=hf_token)
+        if not load_in_4bit:
+            model = model.merge_and_unload()
+    model.eval()
+    return model, tokenizer
+
+
 def unload_model(model):
     del model
     gc.collect()
@@ -152,11 +181,13 @@ def build_prompts(batch, model_type, cot_prompt_builder):
     return [row["messages"][:-1] for row in batch]
 
 
-def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4, max_new_tokens=512):
+def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4, max_new_tokens=512,
+             generation_kwargs=None):
     save_folder = Path(save_folder)
     save_folder.mkdir(parents=True, exist_ok=True)
 
-    inferencer = BatchInferencer(model=model, processor=processor, max_new_tokens=max_new_tokens)
+    inferencer = BatchInferencer(model=model, processor=processor, max_new_tokens=max_new_tokens,
+                                 generation_kwargs=generation_kwargs)
     inferencer.disable_gradient_checkpointing()
 
     # "cot" / "cot_typed" differ from the closed-schema models in their
@@ -178,7 +209,7 @@ def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model-type", choices=list(SUBFOLDERS), required=True,
+    parser.add_argument("--model-type", choices=list(SUBFOLDERS) + ["causal"], required=True,
                          help="cot_typed = the CoT-distilled model with the requested entity types added "
                               "to its prompt (see src/prompts.TYPED_SECTION), scored like baseline/pretrain")
     parser.add_argument("--dataset-name", required=True,
@@ -187,6 +218,7 @@ def main() -> None:
     parser.add_argument("--subset-repo-id", default=SUBSET_REPO_ID_DEFAULT)
     parser.add_argument("--output-dir", default="outputs")
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--limit", type=int, default=None, help="Only the first N rows (pilots / smoke tests)")
     parser.add_argument("--max-new-tokens", type=int, default=1536,
                          help="2026-08-30: raised from 512 — the baseline (non-fine-tuned) model "
                               "produces a visible reasoning preamble ('<unused94>thought...') before "
@@ -198,6 +230,19 @@ def main() -> None:
                               "its JSON answer. Training data itself measured up to 4077 tokens for "
                               "prompt+response combined at the 100th percentile.")
     parser.add_argument("--hf-token", default=None, help="Needed for --model-type pretrain or cot")
+    causal = parser.add_argument_group("--model-type causal (any causal LM, closed-schema prompt like the baseline)")
+    causal.add_argument("--model-id", default="Qwen/Qwen3-4B")
+    causal.add_argument("--adapter", default=None, help="LoRA adapter (HF repo or local folder)")
+    causal.add_argument("--run-name", default=None, help="Output subfolder, e.g. qwen3-4b_base")
+    causal.add_argument("--load-in-4bit", action="store_true", help="For small GPUs — not comparable with bf16 runs")
+    causal.add_argument("--do-sample", action="store_true",
+                        help="Sample instead of greedy decoding. Qwen3 in thinking mode should not be run greedy "
+                             "(its model card warns of endless repetitions); uses its recommended "
+                             "temperature/top_p/top_k below")
+    causal.add_argument("--temperature", type=float, default=0.6)
+    causal.add_argument("--top-p", type=float, default=0.95)
+    causal.add_argument("--top-k", type=int, default=20)
+    causal.add_argument("--seed", type=int, default=0)
     parser.add_argument("--allow-missing-all-gold", action="store_true",
                          help="For --model-type cot only: run even if the subset has no 'all_gold' column, "
                               "scoring against the closed-schema prompt's gold instead. That gold omits every "
@@ -207,7 +252,10 @@ def main() -> None:
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
 
-    save_folder = Path(args.output_dir) / args.dataset_name / SUBFOLDERS[args.model_type]
+    if args.model_type == "causal" and not args.run_name:
+        raise SystemExit("--model-type causal needs --run-name (the output subfolder)")
+    subfolder = args.run_name if args.model_type == "causal" else SUBFOLDERS[args.model_type]
+    save_folder = Path(args.output_dir) / args.dataset_name / subfolder
     if (save_folder / "metrics.json").exists():
         print(f"[SKIP] {save_folder} already has metrics.json — nothing to do "
               f"(use rescore.py to recompute metrics from its predictions.jsonl).")
@@ -223,6 +271,8 @@ def main() -> None:
         token=hf_token,
     )
     test_data = ds["test"]
+    if args.limit:
+        test_data = test_data.select(range(min(args.limit, len(test_data))))
     print(f"  {len(test_data)} rows loaded.")
 
     if (args.model_type == "cot" and "all_gold" not in test_data.column_names
@@ -234,7 +284,14 @@ def main() -> None:
             "--allow-missing-all-gold to run anyway.")
 
     print(f"Loading {args.model_type} model...")
-    if args.model_type == "baseline":
+    generation_kwargs = None
+    if args.model_type == "causal":
+        model, processor = load_causal(args.model_id, args.adapter, hf_token, args.load_in_4bit)
+        if args.do_sample:
+            transformers.set_seed(args.seed)
+            generation_kwargs = {"do_sample": True, "temperature": args.temperature,
+                                 "top_p": args.top_p, "top_k": args.top_k}
+    elif args.model_type == "baseline":
         model, processor = load_baseline()
     else:
         if not hf_token:
@@ -244,8 +301,11 @@ def main() -> None:
         model, processor = loader(hf_token, verbose=args.model_type.startswith("cot"))
 
     print(f"Evaluating on {args.dataset_name} ({args.model_type})...")
-    metrics = evaluate(model, processor, test_data, save_folder, model_type=args.model_type,
-                       batch_size=args.batch_size, max_new_tokens=args.max_new_tokens)
+    # a causal LM gets the baseline's closed-schema prompt and is scored like it
+    scoring_type = "baseline" if args.model_type == "causal" else args.model_type
+    metrics = evaluate(model, processor, test_data, save_folder, model_type=scoring_type,
+                       batch_size=args.batch_size, max_new_tokens=args.max_new_tokens,
+                       generation_kwargs=generation_kwargs)
     print(f"F1_type_agnostic={metrics['F1_micro_type_agnostic']:.4f}  "
           f"P={metrics['precision_type_agnostic']:.4f}  R={metrics['recall_type_agnostic']:.4f}  "
           f"n={metrics['n_samples']}")
