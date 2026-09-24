@@ -10,6 +10,12 @@ models' type-exact F1 (as this script did before 2026-09-24) mixes two
 different metrics in one delta. Type-exact F1 is still reported for
 baseline and label-only, in its own columns.
 
+For the models that are given a list of entity types (baseline,
+label-only, CoT-typed), extra columns report the same metric with
+non-requested keys ignored ("req. types"), see src/metrics.py
+METRIC_VERSION 3 — the label-only model adds its own training-time types
+to every answer, which the plain metric counts as false positives.
+
 Rows scored with an older metric version, or CoT rows not scored against
 the full gold, are reported with a warning — run rescore.py to update them.
 
@@ -31,7 +37,8 @@ DATASETS = [
 ]
 CONDITIONS = [("pre_sft", "baseline", "Baseline"),
               ("post_sft", "label_only", "Label-only"),
-              ("post_sft_cot", "cot", "CoT")]
+              ("post_sft_cot", "cot", "CoT"),
+              ("post_sft_cot_typed", "cot_typed", "CoT-typed")]
 
 
 def main() -> None:
@@ -80,6 +87,7 @@ def main() -> None:
             continue
         row = {"Dataset": ds_name}
         base_f1 = res.get("baseline", {}).get("F1_micro_type_agnostic")
+        base_req = res.get("baseline", {}).get("requested_types_only", {}).get("F1_micro_type_agnostic")
         for _, key, name in CONDITIONS:
             m = res.get(key)
             if not m or "F1_micro_type_agnostic" not in m:
@@ -91,6 +99,11 @@ def main() -> None:
                 row[f"Δ {name}"] = round(m["F1_micro_type_agnostic"] - base_f1, 4)
             if key != "cot":
                 row[f"{name} F1 (type-exact)"] = round(m["F1_micro"], 4)
+            req = m.get("requested_types_only")
+            if req:
+                row[f"{name} F1 (req. types)"] = round(req["F1_micro_type_agnostic"], 4)
+                if key != "baseline" and base_req is not None:
+                    row[f"\u0394 {name} (req. types)"] = round(req["F1_micro_type_agnostic"] - base_req, 4)
         row["n_samples"] = next(m["n_samples"] for m in res.values())
         rows.append(row)
 

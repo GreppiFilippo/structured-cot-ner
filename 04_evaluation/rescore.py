@@ -25,10 +25,10 @@ import os
 import shutil
 from pathlib import Path
 
-from src.metrics import CoTPredictionParser, PredictionParser, Scorer, select_gold, write_results
+from src.metrics import OPEN_SCHEMA_MODEL_TYPES, score_run, write_results
 
 DATASETS = ["ncbi", "bc5cdr", "bc2gm", "bc4chemd", "AnatEM", "JNLPBA", "JNLPBA-Rare", "MedMentions-Rare", "biored"]
-CONDITIONS = {"pre_sft": "baseline", "post_sft": "pretrain", "post_sft_cot": "cot"}
+CONDITIONS = {"pre_sft": "baseline", "post_sft": "pretrain", "post_sft_cot": "cot", "post_sft_cot_typed": "cot_typed"}
 SUBSET_REPO_ID_DEFAULT = "filippogreppi/bioner-eval-subset"
 
 
@@ -43,27 +43,19 @@ def load_subset(repo_id, dataset_name, hf_token, subset_dir=None):
 def rescore_folder(folder, model_type, subset):
     records = [json.loads(line) for line in (folder / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
                if line.strip()]
-    parser = CoTPredictionParser if model_type == "cot" else PredictionParser
-
-    scorer = Scorer()
-    gold_sources = set()
-    new_records = []
-    for rec in records:
-        if subset is not None:
-            gold, gold_source = select_gold(subset[rec["idx"]], model_type)
-        else:
-            # closed-schema gold is exactly what evaluate.py stored in "gt"
-            gold, gold_source = rec["gt"], "prompt_types"
-        gold_sources.add(gold_source)
-        pred, status = parser.parse(rec["pred_raw"])
-        f1, f1_ta = scorer.add(gold, pred, status)
-        new_records.append({"idx": rec["idx"], "f1": f1, "f1_type_agnostic": f1_ta, "parse_status": status,
-                            "gt": gold, "pred_parsed": pred, "pred_raw": rec["pred_raw"]})
+    if subset is not None:
+        items = [(rec["idx"], subset[rec["idx"]], rec["pred_raw"]) for rec in records]
+    else:
+        # the closed-schema gold is exactly what evaluate.py stored in "gt";
+        # a minimal row with it as the assistant turn is all select_gold needs
+        items = [(rec["idx"], {"messages": [{"role": "assistant", "content": json.dumps(rec["gt"])}]},
+                  rec["pred_raw"]) for rec in records]
+    scorers, new_records = score_run(items, model_type)
 
     backup = folder / "metrics_before_rescore.json"
     if (folder / "metrics.json").exists() and not backup.exists():
         shutil.copy(folder / "metrics.json", backup)
-    return write_results(folder, scorer, new_records, extra_metrics={"gold_source": sorted(gold_sources)})
+    return write_results(folder, scorers, new_records)
 
 
 def main() -> None:
@@ -86,7 +78,7 @@ def main() -> None:
                 continue
             model_type = CONDITIONS[folder_name]
             subset = None
-            if model_type == "cot":
+            if model_type in OPEN_SCHEMA_MODEL_TYPES:
                 subset = load_subset(args.subset_repo_id, ds_name, hf_token, args.subset_dir)
                 if "all_gold" not in subset.column_names:
                     raise SystemExit(f"{args.subset_repo_id}/{ds_name} has no 'all_gold' column — rebuild the "
@@ -100,6 +92,8 @@ def main() -> None:
                   f"F1_ta {old.get('F1_micro_type_agnostic', float('nan')):.4f} -> {new['F1_micro_type_agnostic']:.4f}   "
                   f"F1 {old.get('F1_micro', float('nan')):.4f} -> {new['F1_micro']:.4f}   "
                   f"parse={new['parse_status_counts']}")
+            if "requested_types_only" in new:
+                print(f"{'':<31}requested types only: F1_ta {new['requested_types_only']['F1_micro_type_agnostic']:.4f}")
 
 
 if __name__ == "__main__":

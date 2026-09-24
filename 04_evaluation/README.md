@@ -85,7 +85,18 @@ matter when they were generated. The previous `metrics.json` is kept once
 as `metrics_before_rescore.json`. Re-scoring the CoT runs needs the
 subset's `all_gold` column (rebuild the subset first, step 1).
 
-## 4. Aggregate into the final comparison table
+## 4. Significance (CPU only)
+
+```bash
+python3 significance.py
+```
+
+Paired bootstrap 95% confidence intervals for every model-vs-model F1
+difference, per dataset and for the 9-dataset mean, on both metric
+variants (see below). Reads only the per-row counts stored in
+`predictions.jsonl`; writes `outputs/significance.csv`.
+
+## 5. Aggregate into the final comparison table
 
 ```bash
 python3 aggregate_results_3way.py
@@ -150,6 +161,19 @@ numbers in every `metrics.json`:
   column and every delta (earlier versions compared the CoT model's
   type-agnostic F1 against the other two models' type-exact F1).
 
+**Requested types only** (metric version 3): for every model that is given
+a list of entity types (baseline, label-only, CoT-typed), each metric is
+also reported with the predicted keys that were not requested ignored
+(`requested_types_only` in `metrics.json`, "req. types" columns in the
+table). The prompt says the keys MUST be exactly the requested types, and
+the label-only model systematically adds its own training-time types
+(`DRUG`, `PROCESS`, `ORGANISM`, `SYMPTOM`, ...) to every answer — on
+ncbi, bc2gm and AnatEM 85–89% of its keys were never requested — whose
+spans the plain metric counts as false positives. With them ignored the
+label-only model goes from 0.438 to 0.513 mean F1 and is significantly
+above the baseline (+0.040, 95% CI [+0.026, +0.056]), while the baseline
+barely changes (0.471 → 0.473). Report both variants.
+
 Metric version 2 (2026-09-24, see `src/metrics.py`) changed three things
 for all models alike: span tokens are word characters only, so
 punctuation spacing no longer matters (gold spans are space-joined IOB
@@ -158,6 +182,28 @@ detokenized, `"(CD25)"`); repeated spans are de-duplicated within a
 type; and reasoning blocks (`<think>…</think>`, MedGemma's
 `<unused94>thought…<unused95>`) are stripped before parsing, so a JSON
 draft written while reasoning is never taken as the answer.
+
+## CoT model with the requested types in its prompt (`cot_typed`)
+
+`--model-type cot_typed` evaluates the same CoT-distilled adapter with its
+training prompt kept verbatim plus one inserted section listing the
+requested entity types (the same list the baseline gets) and stating that
+generic biomedical concepts count as entities (`src/prompts.TYPED_SECTION`).
+It is scored like the closed-schema models, against the same gold, so it
+is directly comparable to them. The model was never trained with a type
+list, so check schema adherence on a few rows first — `sanity_check.py`
+prints how many answers used only the requested types:
+
+```bash
+sbatch -N 1 --gpus=nvidia_geforce_rtx_3090:1 -w faretra --export=ALL \
+    --output=slurm_logs/sanity_cot_typed_%j.out --error=slurm_logs/sanity_cot_typed_%j.err \
+    run_docker_sanity.sh cot_typed ncbi --n-samples 10 --max-new-tokens 5120
+```
+
+Then run `run_docker_eval.sh "cot_typed" <dataset> --max-new-tokens 5120`
+for the 9 datasets (results in `outputs/<dataset>/post_sft_cot_typed/`).
+Here "all" measures the spans found regardless of their label, and
+"requested types only" additionally requires the requested label.
 
 ## Known result and open question
 
@@ -177,6 +223,7 @@ own zero-shot baseline already carries strong biomedical-domain priors
 build_eval_subset.py       Builds the fixed 500-row-per-dataset subset, pushes to HF
 evaluate.py                 Evaluates one (model, dataset) pair
 rescore.py                  Recomputes metrics from existing predictions.jsonl (no GPU)
+significance.py             Paired bootstrap CIs for model-vs-model differences (no GPU)
 aggregate_results_3way.py   Aggregates all metrics.json into one comparison table
 aggregate_results.py        Older 2-way (baseline/pretrain only) version — superseded
 sanity_check.py              Quick qualitative smoke test on a handful of rows

@@ -21,6 +21,16 @@ METRIC_VERSION history:
       * reasoning blocks (<think>...</think>, MedGemma's
         <unused94>thought...<unused95>) are removed before parsing, so a
         JSON draft written while reasoning is never taken as the answer.
+  3 — (2026-09-24) adds, next to every metric, a "requested_types_only"
+      variant for the models that are given a list of entity types
+      (everything except the open-schema "cot" run): predicted keys that
+      are not among the requested types are ignored. The prompt says keys
+      MUST be exactly the requested types, and the label-only model
+      systematically adds its own training-time types (DRUG, PROCESS,
+      ORGANISM, ...) to every answer, whose spans otherwise all count as
+      false positives. Per-row counts are also stored in predictions.jsonl
+      so significance.py can bootstrap without re-parsing. The v2 numbers
+      themselves are unchanged.
 """
 from __future__ import annotations
 
@@ -31,7 +41,10 @@ from collections import Counter, defaultdict
 import numpy as np
 from scipy import optimize as sp_optimize
 
-METRIC_VERSION = 2
+METRIC_VERSION = 3
+
+# model types that are given a list of entity types in the prompt
+OPEN_SCHEMA_MODEL_TYPES = {"cot"}
 
 
 # --- Span matching ---
@@ -251,7 +264,7 @@ def select_gold(row, model_type):
     when the subset has that column (build_eval_subset.py, 2026-09-24+).
     """
     closed = parse_gold(row["messages"][-1]["content"])
-    if model_type != "cot":
+    if model_type not in OPEN_SCHEMA_MODEL_TYPES:
         return closed, "prompt_types"
     if row.get("all_gold") is not None:
         return parse_gold(row["all_gold"]), "all_gold"
@@ -270,7 +283,10 @@ class Scorer:
     across the closed-schema models and the open-schema CoT model, which
     names its own types."""
 
-    def __init__(self):
+    def __init__(self, requested_types_only=False):
+        # when True, predicted keys that are not keys of the gold (= the
+        # entity types requested in the prompt) are dropped before scoring
+        self.requested_types_only = requested_types_only
         self.tp = self.gt = self.pred = 0.0
         self.tp_ta = self.gt_ta = self.pred_ta = 0.0
         self.per_entity = defaultdict(lambda: [0.0, 0, 0])
@@ -278,7 +294,10 @@ class Scorer:
         self.n = 0
 
     def add(self, gold, pred, status):
-        """Scores one row; returns (row_f1, row_f1_type_agnostic)."""
+        """Scores one row; returns (row_f1, row_f1_type_agnostic,
+        [tp, gt, pred] type-agnostic counts of the row)."""
+        if self.requested_types_only:
+            pred = {k: v for k, v in pred.items() if k in gold}
         self.n += 1
         self.parse_counts[status] += 1
 
@@ -304,7 +323,8 @@ class Scorer:
         self.gt_ta += gt_ta
         self.pred_ta += pred_ta
 
-        return f1_from_counts(tp_s, gt_s, pred_s), f1_from_counts(tp_ta, gt_ta, pred_ta)
+        return (f1_from_counts(tp_s, gt_s, pred_s), f1_from_counts(tp_ta, gt_ta, pred_ta),
+                [tp_ta, gt_ta, pred_ta])
 
     def metrics(self):
         return {
@@ -336,15 +356,46 @@ class Scorer:
         return dict(sorted(per_ent.items(), key=lambda kv: kv[1]["f1"]))
 
 
-def write_results(save_folder, scorer, records, extra_metrics=None, worst_k=10):
+def score_run(items, model_type):
+    """Scores one (model, dataset) run.
+
+    items: iterable of (idx, subset_row, pred_raw). Returns (scorers,
+    records): scorers["all"] scores every predicted key; for models given a
+    list of entity types, scorers["requested_types_only"] ignores keys that
+    were not requested (see METRIC_VERSION 3)."""
+    parser = CoTPredictionParser if model_type.startswith("cot") else PredictionParser
+    scorers = {"all": Scorer()}
+    if model_type not in OPEN_SCHEMA_MODEL_TYPES:
+        scorers["requested_types_only"] = Scorer(requested_types_only=True)
+    records = []
+    for idx, row, pred_raw in items:
+        gold, gold_source = select_gold(row, model_type)
+        pred, status = parser.parse(pred_raw)
+        rec = {"idx": idx, "parse_status": status, "gold_source": gold_source}
+        for name, scorer in scorers.items():
+            f1, f1_ta, counts = scorer.add(gold, pred, status)
+            suffix = "" if name == "all" else "_requested_types_only"
+            rec[f"f1{suffix}"] = f1
+            rec[f"f1_type_agnostic{suffix}"] = f1_ta
+            rec[f"counts_type_agnostic{suffix}"] = counts
+        rec.update({"gt": gold, "pred_parsed": pred, "pred_raw": pred_raw})
+        records.append(rec)
+    return scorers, records
+
+
+def write_results(save_folder, scorers, records, worst_k=10):
     """Writes metrics.json, per_entity_metrics.json, predictions.jsonl and
     worst_examples.md into save_folder (a pathlib.Path)."""
-    metrics = scorer.metrics()
-    metrics.update(extra_metrics or {})
+    metrics = scorers["all"].metrics()
+    metrics["gold_source"] = sorted({r["gold_source"] for r in records})
+    if "requested_types_only" in scorers:
+        m = scorers["requested_types_only"].metrics()
+        metrics["requested_types_only"] = {k: v for k, v in m.items()
+                                           if k not in ("metric_version", "n_samples", "parse_status_counts")}
     with open(save_folder / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
     with open(save_folder / "per_entity_metrics.json", "w") as f:
-        json.dump(scorer.per_entity_metrics(), f, indent=2)
+        json.dump(scorers["all"].per_entity_metrics(), f, indent=2)
     with open(save_folder / "predictions.jsonl", "w", encoding="utf-8") as f:
         for rec in records:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")

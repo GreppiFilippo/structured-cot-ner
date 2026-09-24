@@ -14,6 +14,8 @@ instructions for, artificially depressing its measured performance.
 """
 from __future__ import annotations
 
+import json
+
 FREE_COT_TEMPLATE = """You are generating high-quality synthetic reasoning data. This data will be used to train a small model to perform open-schema named entity recognition through explicit reasoning. Your role is the teacher: think through the task carefully and completely, because the small model will learn to imitate exactly the reasoning process you demonstrate, not just the final answer.
 
 You are given a single text. It may come from any domain, language, or format: news, code, legal filings, biomedical papers, social media, configuration files, mathematical problems, poetry, or anything else. You are not given a fixed list of entity types.
@@ -56,6 +58,22 @@ Text:
 ```"""
 
 
+# 2026-09-24: for --model-type cot_typed only. Tests whether the CoT
+# model, trained on the open-schema prompt above, can follow a given list
+# of entity types (the same list the baseline and label-only models get).
+# The training prompt is kept verbatim and this block is inserted right
+# before the text, so the only difference from what the model was trained
+# on is this one section.
+TYPED_SECTION = """Entity types to extract from this text: {types}
+Report only entities of these types, and use exactly these strings as their labels. In this domain, generic biomedical concepts (diseases, symptoms, anatomical structures, cells, chemicals, genes and proteins) count as entities even when they are common nouns rather than proper names. If the list is empty or no span of a requested type is present, the entities array is empty.
+
+"""
+
+
 class FreeCoTPromptBuilder:
     def build(self, span: str) -> str:
         return FREE_COT_TEMPLATE.format(span=span)
+
+    def build_typed(self, span: str, entity_types: list[str]) -> str:
+        section = TYPED_SECTION.format(types=json.dumps(entity_types, ensure_ascii=False))
+        return self.build(span).replace("\nText:\n", "\n" + section + "Text:\n", 1)

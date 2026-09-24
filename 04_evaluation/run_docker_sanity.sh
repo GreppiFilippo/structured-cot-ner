@@ -3,7 +3,8 @@
 # evaluate.py — meant for a quick one-off sbatch job (should take under a
 # minute of actual GPU time), not a full evaluation run.
 #
-# Args: model_type [dataset_name] (dataset_name defaults to "ncbi" if omitted)
+# Args: model_type [dataset_name] [extra sanity_check.py flags, e.g. --max-new-tokens 5120]
+# (dataset_name defaults to "ncbi" if omitted)
 
 PHYS_DIR="$(pwd)"
 LLM_CACHE_DIR="/llms"
@@ -22,4 +23,4 @@ docker run \
     bioner-eval-image \
     python3 /workspace/sanity_check.py \
     --model-type "${1}" \
-    --dataset-name "${2:-ncbi}"
+    --dataset-name "${2:-ncbi}" "${@:3}"

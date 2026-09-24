@@ -13,6 +13,7 @@ Usage:
     python3 evaluate.py --model-type baseline --dataset-name ncbi
     python3 evaluate.py --model-type pretrain --dataset-name bc5cdr
     python3 evaluate.py --model-type cot --dataset-name ncbi --max-new-tokens 5120
+    python3 evaluate.py --model-type cot_typed --dataset-name ncbi --max-new-tokens 5120
 """
 from __future__ import annotations
 
@@ -28,13 +29,17 @@ import torch
 import transformers
 from tqdm.auto import tqdm
 
-from src.metrics import CoTPredictionParser, PredictionParser, Scorer, select_gold, write_results
+from src.metrics import parse_gold, score_run, write_results
 from src.prompts import FreeCoTPromptBuilder
 
 BASE_MODEL_ID = "google/medgemma-1.5-4b-it"
 PRETRAIN_PATH = "filippogreppi/MedGemma-pretrain"
 COT_DISTILLED_PATH = "filippogreppi/MedGemma-CoT-distilled"
 SUBSET_REPO_ID_DEFAULT = "filippogreppi/bioner-eval-subset"
+
+# output subfolder per model type; "pre_sft"/"post_sft" are kept as-is
+# because resume-skip and the aggregate scripts look them up by name
+SUBFOLDERS = {"baseline": "pre_sft", "pretrain": "post_sft", "cot": "post_sft_cot", "cot_typed": "post_sft_cot_typed"}
 
 _PADDING_TOKEN_RE = re.compile(r"<(?:pad|eos|bos)>")
 
@@ -132,6 +137,21 @@ def unload_model(model):
 # --- Evaluation loop ---
 
 
+def requested_types(row):
+    """The entity types the closed-schema prompt of this row asks for —
+    exactly the keys of its gold answer, in prompt order."""
+    return list(parse_gold(row["messages"][-1]["content"]).keys())
+
+
+def build_prompts(batch, model_type, cot_prompt_builder):
+    if model_type == "cot":
+        return [[{"role": "user", "content": cot_prompt_builder.build(row["raw_text"])}] for row in batch]
+    if model_type == "cot_typed":
+        return [[{"role": "user", "content": cot_prompt_builder.build_typed(row["raw_text"], requested_types(row))}]
+                for row in batch]
+    return [row["messages"][:-1] for row in batch]
+
+
 def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4, max_new_tokens=512):
     save_folder = Path(save_folder)
     save_folder.mkdir(parents=True, exist_ok=True)
@@ -139,42 +159,28 @@ def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4,
     inferencer = BatchInferencer(model=model, processor=processor, max_new_tokens=max_new_tokens)
     inferencer.disable_gradient_checkpointing()
 
-    # model_type == "cot" differs in three ways: its own open-schema
-    # prompt (built from raw_text), its own output parser (a list of
-    # {"text", "label"} dicts, not {TYPE: [span]}), and its own gold
-    # (every annotated span, not only the types sampled into the
-    # closed-schema prompt) — see src/metrics.select_gold.
-    cot_prompt_builder = FreeCoTPromptBuilder() if model_type == "cot" else None
-    parser = CoTPredictionParser if model_type == "cot" else PredictionParser
+    # "cot" / "cot_typed" differ from the closed-schema models in their
+    # prompt (built from raw_text; "cot_typed" adds the requested types)
+    # and their output parser; "cot" is also scored against the full gold
+    # — see src/metrics.select_gold and score_run.
+    cot_prompt_builder = FreeCoTPromptBuilder() if model_type.startswith("cot") else None
 
-    scorer = Scorer()
-    records = []
-    gold_sources = set()
+    items = []
     n = len(test_data)
     for start in tqdm(range(0, n, batch_size), desc=save_folder.name, leave=False):
         batch = [test_data[i] for i in range(start, min(start + batch_size, n))]
-        if model_type == "cot":
-            prompts = [[{"role": "user", "content": cot_prompt_builder.build(row["raw_text"])}]
-                       for row in batch]
-        else:
-            prompts = [row["messages"][:-1] for row in batch]
+        preds_raw = inferencer.generate(build_prompts(batch, model_type, cot_prompt_builder))
+        items.extend((start + i, row, pred_raw) for i, (row, pred_raw) in enumerate(zip(batch, preds_raw)))
 
-        preds_raw = inferencer.generate(prompts)
-
-        for i, (row, pred_raw) in enumerate(zip(batch, preds_raw)):
-            gold, gold_source = select_gold(row, model_type)
-            gold_sources.add(gold_source)
-            pred, status = parser.parse(pred_raw)
-            f1, f1_ta = scorer.add(gold, pred, status)
-            records.append({"idx": start + i, "f1": f1, "f1_type_agnostic": f1_ta, "parse_status": status,
-                            "gt": gold, "pred_parsed": pred, "pred_raw": pred_raw})
-
-    return write_results(save_folder, scorer, records, extra_metrics={"gold_source": sorted(gold_sources)})
+    scorers, records = score_run(items, model_type)
+    return write_results(save_folder, scorers, records)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model-type", choices=["baseline", "pretrain", "cot"], required=True)
+    parser.add_argument("--model-type", choices=list(SUBFOLDERS), required=True,
+                         help="cot_typed = the CoT-distilled model with the requested entity types added "
+                              "to its prompt (see src/prompts.TYPED_SECTION), scored like baseline/pretrain")
     parser.add_argument("--dataset-name", required=True,
                          help="One of: ncbi, bc5cdr, bc2gm, bc4chemd, AnatEM, JNLPBA, "
                               "JNLPBA-Rare, MedMentions-Rare, biored")
@@ -201,10 +207,7 @@ def main() -> None:
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
 
-    # "baseline"->"pre_sft" and "pretrain"->"post_sft" folder names are
-    # kept as-is: aggregate scripts and resume-skip look for them by name
-    subfolder = {"baseline": "pre_sft", "pretrain": "post_sft", "cot": "post_sft_cot"}[args.model_type]
-    save_folder = Path(args.output_dir) / args.dataset_name / subfolder
+    save_folder = Path(args.output_dir) / args.dataset_name / SUBFOLDERS[args.model_type]
     if (save_folder / "metrics.json").exists():
         print(f"[SKIP] {save_folder} already has metrics.json — nothing to do "
               f"(use rescore.py to recompute metrics from its predictions.jsonl).")
@@ -238,7 +241,7 @@ def main() -> None:
             raise SystemExit(f"--hf-token (or HF_TOKEN env var) is required for --model-type "
                              f"{args.model_type} (needed to pull the private LoRA adapter).")
         loader = load_pretrain if args.model_type == "pretrain" else load_cot_distilled
-        model, processor = loader(hf_token, verbose=args.model_type == "cot")
+        model, processor = loader(hf_token, verbose=args.model_type.startswith("cot"))
 
     print(f"Evaluating on {args.dataset_name} ({args.model_type})...")
     metrics = evaluate(model, processor, test_data, save_folder, model_type=args.model_type,
@@ -249,6 +252,10 @@ def main() -> None:
     # type-exact F1 is near zero for the CoT model by construction: it
     # names its own types, never matched against the gold vocabulary
     print(f"F1_type_exact={metrics['F1_micro']:.4f}  P={metrics['precision']:.4f}  R={metrics['recall']:.4f}")
+    if "requested_types_only" in metrics:
+        m = metrics["requested_types_only"]
+        print(f"requested types only: F1_type_agnostic={m['F1_micro_type_agnostic']:.4f}  "
+              f"F1_type_exact={m['F1_micro']:.4f}")
     print(f"parse_status_counts={metrics['parse_status_counts']}  gold_source={metrics['gold_source']}")
 
     unload_model(model)

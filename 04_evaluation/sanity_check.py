@@ -28,16 +28,20 @@ from evaluate import (
     BASE_MODEL_ID,
     SUBSET_REPO_ID_DEFAULT,
     BatchInferencer,
+    build_prompts,
     load_baseline,
+    load_cot_distilled,
     load_pretrain,
+    requested_types,
     unload_model,
 )
-from src.metrics import PredictionParser
+from src.metrics import CoTPredictionParser, PredictionParser
+from src.prompts import FreeCoTPromptBuilder
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model-type", choices=["baseline", "pretrain"], required=True)
+    parser.add_argument("--model-type", choices=["baseline", "pretrain", "cot", "cot_typed"], required=True)
     parser.add_argument("--dataset-name", default="ncbi", help="Which of the 9 to sanity-check against")
     parser.add_argument("--subset-repo-id", default=SUBSET_REPO_ID_DEFAULT)
     parser.add_argument("--n-samples", type=int, default=3)
@@ -62,8 +66,9 @@ def main() -> None:
         model, processor = load_baseline()
     else:
         if not hf_token:
-            raise SystemExit("--hf-token (or HF_TOKEN env var) is required for --model-type pretrain.")
-        model, processor = load_pretrain(hf_token, verbose=True)
+            raise SystemExit(f"--hf-token (or HF_TOKEN env var) is required for --model-type {args.model_type}.")
+        loader = load_pretrain if args.model_type == "pretrain" else load_cot_distilled
+        model, processor = loader(hf_token, verbose=True)
     print("  Model loaded OK.")
 
     inferencer = BatchInferencer(model=model, processor=processor, max_new_tokens=args.max_new_tokens)
@@ -71,17 +76,24 @@ def main() -> None:
 
     print(f"\nGenerating on {len(samples)} sample(s)...\n")
     ok_count = 0
+    on_schema_count = 0
+    parser_cls = CoTPredictionParser if args.model_type.startswith("cot") else PredictionParser
+    cot_builder = FreeCoTPromptBuilder()
     for i, sample in enumerate(samples):
-        prompt = sample["messages"][:-1]
+        prompt = build_prompts([sample], args.model_type, cot_builder)[0]
         gt_json = sample["messages"][-1]["content"]
         pred_raw = inferencer.generate([prompt])[0]
-        pred_parsed, status = PredictionParser.parse(pred_raw)
+        pred_parsed, status = parser_cls.parse(pred_raw)
+        asked = requested_types(sample)
+        off_schema = sorted(k for k, v in pred_parsed.items() if v and k not in asked)
+        on_schema_count += int(not off_schema)
 
         is_ok = status in ("ok", "fence_stripped", "extracted_object")
         ok_count += int(is_ok)
 
         print(f"--- sample {i} ---")
         print(f"  parse_status: {status}  {'OK' if is_ok else 'FAILED TO PARSE'}")
+        print(f"  requested types: {asked}   non-requested types used: {off_schema or 'none'}")
         print(f"  GT   : {gt_json[:200]}")
         print(f"  PRED (full, {len(pred_raw)} chars): {pred_raw!r}")
         if is_ok:
@@ -91,6 +103,8 @@ def main() -> None:
     unload_model(model)
 
     print("=" * 60)
+    print(f"{on_schema_count}/{len(samples)} answers used only the requested entity types "
+          f"(for cot_typed: the key check before launching the full evaluation).")
     if ok_count == len(samples):
         print(f"PASS: {ok_count}/{len(samples)} samples produced parseable JSON. "
               "Safe to launch the full run.")
