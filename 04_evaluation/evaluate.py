@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
 import os
 import re
 from pathlib import Path
@@ -212,15 +213,39 @@ def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4,
     # — see src/metrics.select_gold and score_run.
     cot_prompt_builder = FreeCoTPromptBuilder() if model_type.startswith("cot") else None
 
-    items = []
-    n = len(test_data)
-    for start in tqdm(range(0, n, batch_size), desc=save_folder.name, leave=False):
-        batch = [test_data[i] for i in range(start, min(start + batch_size, n))]
-        preds_raw = inferencer.generate(build_prompts(batch, model_type, cot_prompt_builder))
-        items.extend((start + i, row, pred_raw) for i, (row, pred_raw) in enumerate(zip(batch, preds_raw)))
+    # Raw generations are appended to generations_partial.jsonl after every
+    # batch, so an interrupted run (job time limit, machine switched off)
+    # resumes from the first row not generated yet instead of starting over.
+    # With sampling, resumed rows use a different random stream than an
+    # uninterrupted run would have — rows are still generated exactly once.
+    partial_path = save_folder / "generations_partial.jsonl"
+    done = {}
+    if partial_path.exists():
+        for line in partial_path.read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(line)
+                done[rec["idx"]] = rec["pred_raw"]
+            except (json.JSONDecodeError, KeyError):
+                pass  # a line cut short by the interruption: that row is regenerated
+        print(f"  resuming: {len(done)} rows already generated in {partial_path.name}")
 
+    n = len(test_data)
+    todo = [i for i in range(n) if i not in done]
+    with open(partial_path, "a", encoding="utf-8") as partial:
+        for start in tqdm(range(0, len(todo), batch_size), desc=save_folder.name, leave=False):
+            idxs = todo[start:start + batch_size]
+            batch = [test_data[i] for i in idxs]
+            preds_raw = inferencer.generate(build_prompts(batch, model_type, cot_prompt_builder))
+            for i, pred_raw in zip(idxs, preds_raw):
+                done[i] = pred_raw
+                partial.write(json.dumps({"idx": i, "pred_raw": pred_raw}, ensure_ascii=False) + "\n")
+            partial.flush()
+
+    items = [(i, test_data[i], done[i]) for i in range(n)]
     scorers, records = score_run(items, model_type)
-    return write_results(save_folder, scorers, records)
+    metrics = write_results(save_folder, scorers, records)
+    partial_path.unlink()  # everything is in predictions.jsonl now
+    return metrics
 
 
 def main() -> None:

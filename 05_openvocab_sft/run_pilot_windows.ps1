@@ -6,29 +6,43 @@
 #
 # Run from the repository root, in a normal (interactive) terminal:
 #     powershell -ExecutionPolicy Bypass -File 05_openvocab_sft\run_pilot_windows.ps1
-# Log: logs\pilot.log
+# Log: logs\pilot_<Tag>.log
+#
+# Safe to re-run after an interruption (e.g. the PC switched off): training
+# resumes from its last checkpoint (every 50 steps), an evaluation resumes
+# from the last generated batch, and finished evaluations are skipped.
 
 param(
-    [string]$Python = "D:\tesi\venv\Scripts\python.exe",
+    # the environment and the model cache must be on an SSD: torch's CUDA
+    # DLLs (~4 GB) and the model weights are memory-mapped, and on a
+    # mechanical disk every start takes tens of minutes (or looks hung)
+    [string]$Python = "C:\tesi\venv\Scripts\python.exe",
+    [string]$HfCache = "C:\hf_cache",
     [string]$ModelId = "Qwen/Qwen3-1.7B",
     [int]$TrainSamples = 1000,
     [int]$EvalRows = 100,
-    [string]$EvalDataset = "ncbi"
+    [string]$EvalDataset = "ncbi",
+    # training data, relative to 05_openvocab_sft\
+    [string]$DataPath = "data\openvocab_train.jsonl",
+    # names the adapter folder (work\pilot_<Tag>) and the fine-tuned eval run;
+    # a different tag per dataset variant, or training would resume from the
+    # checkpoints of another variant
+    [string]$Tag = "v1"
 )
 
 # "Continue": in Windows PowerShell 5 every stderr line of python (warnings,
 # progress bars) becomes an error record, which "Stop" would treat as fatal
 $ErrorActionPreference = "Continue"
-$env:HF_HUB_CACHE = "D:\hf_cache\hub"          # models on D:, the HF login stays where it is
-$env:HF_DATASETS_CACHE = "D:\hf_cache\datasets"
+$env:HF_HUB_CACHE = "$HfCache\hub"             # only the cache moves: the HF login stays where it is
+$env:HF_DATASETS_CACHE = "$HfCache\datasets"
 $env:PYTHONUTF8 = "1"                           # JSON files are UTF-8; Windows defaults to cp1252
 $env:PYTHONUNBUFFERED = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
 $root = (Get-Location).Path
 New-Item -ItemType Directory -Force "$root\logs" | Out-Null
-$log = "$root\logs\pilot.log"
-Set-Content -Path $log -Value "pilot started $(Get-Date)" -Encoding utf8
+$log = "$root\logs\pilot_$Tag.log"
+Add-Content -Path $log -Value "pilot $Tag started $(Get-Date) (data: $DataPath)" -Encoding utf8
 
 # Start-Transcript does not capture native programs' output in Windows
 # PowerShell 5, so every step's output (stdout + stderr) is teed explicitly
@@ -45,9 +59,9 @@ Step "CUDA check" {
 }
 Step "Train pilot adapter" {
     Push-Location "$root\05_openvocab_sft"
-    & $Python train_qwen.py --data-path data\openvocab_train.jsonl --model-id $ModelId `
+    & $Python train_qwen.py --data-path $DataPath --model-id $ModelId `
         --n-train-samples $TrainSamples --num-epochs 1 --eval-steps 50 `
-        --output-dir work\pilot --skip-push
+        --output-dir "work\pilot_$Tag" --skip-push
     Pop-Location
 }
 $slug = ($ModelId -split "/")[-1].ToLower()
@@ -60,8 +74,8 @@ Step "Evaluate base $ModelId" {
 }
 Step "Evaluate pilot adapter" {
     Push-Location "$root\04_evaluation"
-    & $Python evaluate.py --model-type causal --model-id $ModelId --adapter "$root\05_openvocab_sft\work\pilot\adapter" `
-        --run-name "${slug}_sft_pilot" --dataset-name $EvalDataset --limit $EvalRows --batch-size 8 `
+    & $Python evaluate.py --model-type causal --model-id $ModelId --adapter "$root\05_openvocab_sft\work\pilot_$Tag\adapter" `
+        --run-name "${slug}_sft_pilot_$Tag" --dataset-name $EvalDataset --limit $EvalRows --batch-size 8 `
         --max-new-tokens 4096 --do-sample --output-dir outputs_pilot
     Pop-Location
 }
