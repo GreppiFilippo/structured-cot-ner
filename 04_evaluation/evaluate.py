@@ -111,11 +111,26 @@ def load_baseline():
     return model, processor
 
 
+def check_adapter_applied(peft_model, name):
+    """Fails loudly if the LoRA weights did not actually load. When the
+    module names saved in an adapter do not match the loaded model (e.g. a
+    different transformers version renamed them), PEFT only warns and
+    leaves every lora_B at its zero initialization — the run would then
+    silently evaluate the base model under the adapter's name."""
+    lora_b = [p for n, p in peft_model.named_parameters() if "lora_B" in n]
+    trained = sum(int(p.detach().abs().max().item() > 0) for p in lora_b)
+    print(f"  [adapter check] {name}: {trained}/{len(lora_b)} LoRA B matrices non-zero "
+          f"(the rest, if any, are modules never used in text-only training, e.g. the vision tower)")
+    if not trained:
+        raise SystemExit(f"adapter {name}: no LoRA weight was loaded — module names do not match the model")
+
+
 def _load_adapter(adapter_path, hf_token, verbose):
     processor = transformers.AutoProcessor.from_pretrained(BASE_MODEL_ID, backend="torchvision")
     base = transformers.AutoModelForImageTextToText.from_pretrained(
         BASE_MODEL_ID, device_map="auto", dtype=torch.bfloat16)
     model = peft.PeftModel.from_pretrained(base, adapter_path, token=hf_token)
+    check_adapter_applied(model, adapter_path)
     if verbose:
         # printed BEFORE merge_and_unload(), which discards the adapter
         # metadata — compare against the training run's LoRA settings to
@@ -150,6 +165,7 @@ def load_causal(model_id, adapter=None, hf_token=None, load_in_4bit=False):
     model = transformers.AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
     if adapter:
         model = peft.PeftModel.from_pretrained(model, adapter, token=hf_token)
+        check_adapter_applied(model, adapter)
         if not load_in_4bit:
             model = model.merge_and_unload()
     model.eval()

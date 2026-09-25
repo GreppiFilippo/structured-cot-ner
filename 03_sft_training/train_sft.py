@@ -94,8 +94,11 @@ def execute_sft(model, processor, ds, max_seq_length, config, ckpt_dir: Path):
         lora_alpha=config.lora_alpha,
         lora_dropout=0.05,
         r=config.lora_r,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                         "gate_proj", "up_proj", "down_proj"],
+        # language model only: a plain list of names also matches the
+        # vision tower's q/k/v_proj, whose LoRA weights stay at zero in
+        # text-only training (confirmed on the published adapters: 81/81
+        # vision lora_B all-zero) — dead parameters, no effect on outputs
+        target_modules=r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)",
         task_type="CAUSAL_LM",
     )
 
