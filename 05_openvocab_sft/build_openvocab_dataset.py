@@ -50,6 +50,23 @@ _OLD_FORMAT_RE = re.compile(r"\bjson\b|\bexcluded (array|list)\b|\bentities (arr
                             re.IGNORECASE)
 
 
+# How the teacher reasoning is wrapped in the target, per student model:
+#  qwen      Qwen3 thinking mode: "<think>\n...\n</think>\n\n" + answer
+#  medgemma  MedGemma-1.5's own thought block, exactly as it emits it
+#            zero-shot in the baseline runs: "<unused94>thought\n..." +
+#            "<unused95>" + answer
+REASONING_FORMATS = {
+    "qwen": lambda reasoning, answer: f"<think>\n{reasoning}\n</think>\n\n{answer}",
+    "medgemma": lambda reasoning, answer: f"<unused94>thought\n{reasoning}<unused95>{answer}",
+}
+# reasoning for the prompts that request no entity type at all (the eval
+# subset has such rows, e.g. 8/100 of the first ncbi rows): the teacher never
+# saw this case, and a pilot trained without it answered them with types
+# copied from the system prompt's worked example
+NO_TYPES_REASONING = ("No entity types are requested for this text, so there is nothing to extract "
+                      "and the answer is an empty object.")
+
+
 def load_eval_prompt(path: Path = EVAL_SUBSET_BUILDER) -> tuple[str, str]:
     """SYSTEM_PROMPT and USER_TEMPLATE from the evaluation subset builder,
     read with ast (no import, so none of its heavy dependencies needed)."""
@@ -115,6 +132,12 @@ def main() -> None:
     parser.add_argument("--drop-old-format-talk", action="store_true",
                         help="Drop rows whose reasoning talks about the open-schema output format "
                              "(JSON, the excluded/entities arrays, schema)")
+    parser.add_argument("--reasoning-format", choices=list(REASONING_FORMATS), default="qwen",
+                        help="How the reasoning is wrapped for the student model (see REASONING_FORMATS)")
+    parser.add_argument("--n-no-type-examples", type=int, default=0,
+                        help="Turn this many rows with empty gold into prompts that request NO entity type "
+                             "(ENTITY TYPES: []), answered with {} after a short fixed reasoning. Requires "
+                             "--keep-empty-gold; the remaining empty-gold rows keep their negative types.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -136,6 +159,11 @@ def main() -> None:
     inv = np.array([1.0 / type_freq[t] for t in all_types])
     weights = inv / inv.sum()
 
+    wrap = REASONING_FORMATS[args.reasoning_format]
+    rng_no_types = np.random.default_rng(args.seed)
+    empty_ids = [r["id"] for r in rows if not r["gold"] and reasoning_ok(r)]
+    no_type_ids = set(rng_no_types.permutation(empty_ids)[: args.n_no_type_examples]) if args.keep_empty_gold else set()
+
     stats = Counter()
     totals = Counter()
     out_path = Path(args.output)
@@ -148,6 +176,21 @@ def main() -> None:
                 continue
             if not gold and not args.keep_empty_gold:
                 stats["dropped_empty_gold"] += 1
+                continue
+            # uses a fixed reasoning, not the teacher's, so the reasoning filters below do not apply
+            if row["id"] in no_type_ids:
+                user = user_template.format(text=row["span"], entities="[]")
+                out.write(json.dumps({
+                    "id": row["id"],
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user},
+                        {"role": "assistant", "content": wrap(NO_TYPES_REASONING, "{}")},
+                    ],
+                    "meta": {"kind": "no_types_requested"},
+                }, ensure_ascii=False) + "\n")
+                stats["written"] += 1
+                stats["no_types_requested"] += 1
                 continue
             meta = agreement(row, gold)
             if args.drop_teacher_excluded_gold and meta["gold_rejected_by_teacher"]:
@@ -166,7 +209,7 @@ def main() -> None:
             target = {t: gold.get(t, []) for t in types}
 
             user = user_template.format(text=row["span"], entities=json.dumps(types, ensure_ascii=False))
-            answer = f"<think>\n{row['reasoning'].strip()}\n</think>\n\n{json.dumps(target, ensure_ascii=False)}"
+            answer = wrap(row["reasoning"].strip(), json.dumps(target, ensure_ascii=False))
             meta["reasoning_source"] = row.get("reasoning_source", "visible")
             out.write(json.dumps({
                 "id": row["id"],
@@ -184,8 +227,9 @@ def main() -> None:
                                                and meta["teacher_entities_not_in_gold"] == 0)
             stats[f"source_{meta['reasoning_source']}"] += 1
 
-    n, g = stats["written"], max(totals["n_gold_spans"], 1)
-    print(f"\n{n} examples written to {out_path}")
+    n, g = stats["written"] - stats["no_types_requested"], max(totals["n_gold_spans"], 1)
+    print(f"\n{stats['written']} examples written to {out_path} ({args.reasoning_format} format)"
+          + (f", of which {stats['no_types_requested']} request no entity type" if stats["no_types_requested"] else ""))
     for k in ("dropped_no_reasoning", "dropped_empty_gold", "dropped_teacher_excluded_gold", "dropped_old_format_talk"):
         if stats[k]:
             print(f"  {stats[k]} {k.replace('_', ' ')}")
