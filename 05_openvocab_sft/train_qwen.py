@@ -34,6 +34,17 @@ import transformers
 from datasets import load_dataset
 
 
+def resolve_data_path(path: str) -> str:
+    """A local path, or hf://<owner>/<dataset-repo>/<file> for a file in a
+    (private) HF dataset repo — downloaded first, so cluster jobs can read
+    data that lives on no shared filesystem."""
+    if not path.startswith("hf://"):
+        return path
+    from huggingface_hub import hf_hub_download
+    owner, repo, filename = path[len("hf://"):].split("/", 2)
+    return hf_hub_download(f"{owner}/{repo}", filename, repo_type="dataset", token=os.environ.get("HF_TOKEN"))
+
+
 def render(tokenizer, messages):
     """(input_ids, labels) for one example, loss only on the assistant turn."""
     prompt = tokenizer.apply_chat_template(messages[:-1], tokenize=False, add_generation_prompt=True)
@@ -77,7 +88,7 @@ class Collator:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--data-path", required=True)
+    parser.add_argument("--data-path", required=True, help="Local .jsonl, or hf://<owner>/<dataset-repo>/<file>")
     parser.add_argument("--model-id", default="Qwen/Qwen3-4B")
     parser.add_argument("--output-dir", default="work/qwen3-openvocab")
     parser.add_argument("--load-in-4bit", action="store_true", help="QLoRA (bitsandbytes NF4) — for small GPUs")
@@ -103,7 +114,7 @@ def main() -> None:
     import peft
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(args.model_id)
-    raw = load_dataset("json", data_files=args.data_path)["train"]
+    raw = load_dataset("json", data_files=resolve_data_path(args.data_path))["train"]
     split = raw.train_test_split(test_size=args.validation_size, seed=args.seed)
     train_rows, val_rows = split["train"], split["test"]
     if args.n_train_samples:

@@ -18,6 +18,16 @@ mkdir -p "$LLM_CACHE_DIR"
 
 [ -f .env ] && export $(grep -v '^#' .env | xargs)
 
+# $1: a path relative to this folder, or hf://<owner>/<dataset-repo>/<file>
+# (downloaded inside the container by train_sft.py). Extra arguments after
+# $2 are passed to train_sft.py and override the defaults above, e.g.
+# --work-dir /workspace/work_<run> so a new run never resumes the
+# checkpoints of a previous one.
+case "${1}" in
+    hf://*) DATA_PATH="${1}" ;;
+    *) DATA_PATH="/workspace/${1}" ;;
+esac
+
 docker run \
     -v "$PHYS_DIR":/workspace \
     -v "$LLM_CACHE_DIR":"$DOCKER_INTERNAL_CACHE_DIR" \
@@ -31,7 +41,7 @@ docker run \
     --gpus '"device='"$CUDA_VISIBLE_DEVICES"'"' \
     cot-sft-image \
     python3 /workspace/train_sft.py \
-    --data-path "/workspace/${1}" \
+    --data-path "$DATA_PATH" \
     --hf-repo-id "${2:-filippogreppi/MedGemma-CoT-distilled}" \
     --work-dir /workspace/work \
     "${@:3}"

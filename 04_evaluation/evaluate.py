@@ -250,7 +250,7 @@ def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model-type", choices=list(SUBFOLDERS) + ["causal"], required=True,
+    parser.add_argument("--model-type", choices=list(SUBFOLDERS) + ["causal", "medgemma"], required=True,
                          help="cot_typed = the CoT-distilled model with the requested entity types added "
                               "to its prompt (see src/prompts.TYPED_SECTION), scored like baseline/pretrain")
     parser.add_argument("--dataset-name", required=True,
@@ -271,7 +271,9 @@ def main() -> None:
                               "its JSON answer. Training data itself measured up to 4077 tokens for "
                               "prompt+response combined at the 100th percentile.")
     parser.add_argument("--hf-token", default=None, help="Needed for --model-type pretrain or cot")
-    causal = parser.add_argument_group("--model-type causal (any causal LM, closed-schema prompt like the baseline)")
+    causal = parser.add_argument_group(
+        "--model-type causal (any causal LM) / medgemma (MedGemma with any --adapter): closed-schema prompt "
+        "like the baseline, results in outputs/<dataset>/<run-name>/")
     causal.add_argument("--model-id", default="Qwen/Qwen3-4B")
     causal.add_argument("--adapter", default=None, help="LoRA adapter (HF repo or local folder)")
     causal.add_argument("--run-name", default=None, help="Output subfolder, e.g. qwen3-4b_base")
@@ -293,9 +295,10 @@ def main() -> None:
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
 
-    if args.model_type == "causal" and not args.run_name:
-        raise SystemExit("--model-type causal needs --run-name (the output subfolder)")
-    subfolder = args.run_name if args.model_type == "causal" else SUBFOLDERS[args.model_type]
+    named_run = args.model_type in ("causal", "medgemma")
+    if named_run and not args.run_name:
+        raise SystemExit(f"--model-type {args.model_type} needs --run-name (the output subfolder)")
+    subfolder = args.run_name if named_run else SUBFOLDERS[args.model_type]
     save_folder = Path(args.output_dir) / args.dataset_name / subfolder
     if (save_folder / "metrics.json").exists():
         print(f"[SKIP] {save_folder} already has metrics.json — nothing to do "
@@ -326,12 +329,15 @@ def main() -> None:
 
     print(f"Loading {args.model_type} model...")
     generation_kwargs = None
+    if args.do_sample:
+        transformers.set_seed(args.seed)
+        generation_kwargs = {"do_sample": True, "temperature": args.temperature,
+                             "top_p": args.top_p, "top_k": args.top_k}
     if args.model_type == "causal":
         model, processor = load_causal(args.model_id, args.adapter, hf_token, args.load_in_4bit)
-        if args.do_sample:
-            transformers.set_seed(args.seed)
-            generation_kwargs = {"do_sample": True, "temperature": args.temperature,
-                                 "top_p": args.top_p, "top_k": args.top_k}
+    elif args.model_type == "medgemma":
+        model, processor = (_load_adapter(args.adapter, hf_token, verbose=True) if args.adapter
+                            else load_baseline())
     elif args.model_type == "baseline":
         model, processor = load_baseline()
     else:
@@ -343,7 +349,7 @@ def main() -> None:
 
     print(f"Evaluating on {args.dataset_name} ({args.model_type})...")
     # a causal LM gets the baseline's closed-schema prompt and is scored like it
-    scoring_type = "baseline" if args.model_type == "causal" else args.model_type
+    scoring_type = "baseline" if named_run else args.model_type
     metrics = evaluate(model, processor, test_data, save_folder, model_type=scoring_type,
                        batch_size=args.batch_size, max_new_tokens=args.max_new_tokens,
                        generation_kwargs=generation_kwargs)

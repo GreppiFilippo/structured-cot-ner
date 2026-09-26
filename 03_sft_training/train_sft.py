@@ -25,6 +25,17 @@ import transformers
 import trl
 
 
+def resolve_data_path(path: str) -> str:
+    """A local path, or hf://<owner>/<dataset-repo>/<file> for a file in a
+    (private) HF dataset repo — downloaded first, so cluster jobs can read
+    data that lives on no shared filesystem."""
+    if not path.startswith("hf://"):
+        return path
+    from huggingface_hub import hf_hub_download
+    owner, repo, filename = path[len("hf://"):].split("/", 2)
+    return hf_hub_download(f"{owner}/{repo}", filename, repo_type="dataset", token=os.environ.get("HF_TOKEN"))
+
+
 def measure_max_seq_length(dataset, processor, percentile: int = 99) -> int:
     """Measures real token lengths on the actual training data, instead
     of guessing a fixed max_length — the earlier label-only experiment
@@ -261,7 +272,8 @@ class Config:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--data-path", required=True, help="sft_ready_filtered_v3.jsonl (or whichever filtered dataset)")
+    parser.add_argument("--data-path", required=True,
+                        help="Local .jsonl (e.g. sft_ready_filtered_v3.jsonl), or hf://<owner>/<dataset-repo>/<file>")
     parser.add_argument("--base-model-id", default="google/medgemma-1.5-4b-it")
     parser.add_argument("--hf-repo-id", default="filippogreppi/MedGemma-CoT-distilled")
     parser.add_argument("--work-dir", default="./work")
@@ -305,7 +317,7 @@ def main() -> None:
     processor_dir = work_dir / "processor"
 
     # --- 1. data ---
-    raw = datasets.load_dataset("json", data_files=args.data_path)["train"]
+    raw = datasets.load_dataset("json", data_files=resolve_data_path(args.data_path))["train"]
     print(f"{len(raw)} examples loaded from {args.data_path}")
     split = raw.train_test_split(test_size=args.validation_size, seed=config.random_seed)
     cot_ds = datasets.DatasetDict({"train": split["train"], "validation": split["test"]})
