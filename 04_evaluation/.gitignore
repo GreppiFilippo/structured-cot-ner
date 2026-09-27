@@ -8,3 +8,4 @@ work/
 .venv/
 *.json
 __pycache__/
+outputs_*/
