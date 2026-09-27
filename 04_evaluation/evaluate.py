@@ -54,13 +54,15 @@ _END_OF_TURN_RE = re.compile(r"<end_of_turn>|<\|im_end\|>")
 
 
 class BatchInferencer:
-    def __init__(self, model, processor, max_new_tokens=512, generation_kwargs=None):
+    def __init__(self, model, processor, max_new_tokens=512, generation_kwargs=None, template_kwargs=None):
         """processor: MedGemma's AutoProcessor or a plain tokenizer (causal LMs).
+        template_kwargs: extra chat-template arguments, e.g. {"enable_thinking": False}.
         generation_kwargs: defaults to greedy decoding (the setting of every
         MedGemma run); pass sampling parameters for thinking models."""
         self._model, self._processor = model, processor
         self._max_new_tokens = max_new_tokens
         self._generation_kwargs = generation_kwargs or {"do_sample": False}
+        self._template_kwargs = template_kwargs or {}
         self._tok = tok = getattr(processor, "tokenizer", processor)
         tok.padding_side = "left"
         if tok.pad_token_id is None and tok.eos_token_id is not None:
@@ -78,7 +80,7 @@ class BatchInferencer:
         and keeping them in predictions.jsonl lets rescore.py re-apply
         that step later."""
         texts = [
-            self._processor.apply_chat_template(p, add_generation_prompt=True, tokenize=False)
+            self._processor.apply_chat_template(p, add_generation_prompt=True, tokenize=False, **self._template_kwargs)
             for p in prompts
         ]
         inputs = self._processor(
@@ -115,10 +117,11 @@ class VLLMInferencer:
     its weights are non-zero, like check_adapter_applied does."""
 
     def __init__(self, model_id, adapter=None, max_new_tokens=4096, generation_kwargs=None, seed=0,
-                 hf_token=None, max_model_len=None):
+                 hf_token=None, max_model_len=None, template_kwargs=None):
         from vllm import LLM, SamplingParams
 
         self._tok = transformers.AutoTokenizer.from_pretrained(model_id, token=hf_token)
+        self._template_kwargs = template_kwargs or {}
         self._lora = None
         if adapter:
             from vllm.lora.request import LoRARequest
@@ -141,7 +144,8 @@ class VLLMInferencer:
         pass
 
     def generate(self, prompts):
-        texts = [self._tok.apply_chat_template(p, add_generation_prompt=True, tokenize=False) for p in prompts]
+        texts = [self._tok.apply_chat_template(p, add_generation_prompt=True, tokenize=False, **self._template_kwargs)
+                 for p in prompts]
         outputs = self._llm.generate(texts, self._params, lora_request=self._lora, use_tqdm=False)
         return [_PADDING_TOKEN_RE.sub("", _END_OF_TURN_RE.split(o.outputs[0].text)[0]).strip() for o in outputs]
 
@@ -262,13 +266,13 @@ def build_prompts(batch, model_type, cot_prompt_builder):
 
 
 def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4, max_new_tokens=512,
-             generation_kwargs=None, inferencer=None):
+             generation_kwargs=None, inferencer=None, template_kwargs=None):
     save_folder = Path(save_folder)
     save_folder.mkdir(parents=True, exist_ok=True)
 
     if inferencer is None:
         inferencer = BatchInferencer(model=model, processor=processor, max_new_tokens=max_new_tokens,
-                                     generation_kwargs=generation_kwargs)
+                                     generation_kwargs=generation_kwargs, template_kwargs=template_kwargs)
     inferencer.disable_gradient_checkpointing()
 
     # "cot" / "cot_typed" differ from the closed-schema models in their
@@ -354,6 +358,9 @@ def main() -> None:
                         help="Generation engine for --model-type causal. vllm is much faster for thinking "
                              "models; --batch-size is then the number of rows generated together (and "
                              "saved for resuming) per chunk, e.g. 100.")
+    causal.add_argument("--no-thinking", action="store_true",
+                        help="Qwen3: render the prompt with enable_thinking=False (the template pre-fills an empty "
+                             "<think></think>, so the model answers directly) — zero-shot without native reasoning")
     causal.add_argument("--max-model-len", type=int, default=None,
                         help="vllm only: prompt + reply token budget (default: max-new-tokens + 4096)")
     parser.add_argument("--allow-missing-all-gold", action="store_true",
@@ -405,12 +412,13 @@ def main() -> None:
         generation_kwargs = {"do_sample": True, "temperature": args.temperature,
                              "top_p": args.top_p, "top_k": args.top_k}
     inferencer = None
+    template_kwargs = {"enable_thinking": False} if args.no_thinking else None
     if args.engine == "vllm":
         if args.model_type != "causal":
             raise SystemExit("--engine vllm is only supported with --model-type causal")
         model, processor = None, None
         inferencer = VLLMInferencer(args.model_id, args.adapter, args.max_new_tokens, generation_kwargs,
-                                    args.seed, hf_token, args.max_model_len)
+                                    args.seed, hf_token, args.max_model_len, template_kwargs)
     elif args.model_type == "causal":
         model, processor = load_causal(args.model_id, args.adapter, hf_token, args.load_in_4bit)
     elif args.model_type == "medgemma":
@@ -430,7 +438,8 @@ def main() -> None:
     scoring_type = "baseline" if named_run else args.model_type
     metrics = evaluate(model, processor, test_data, save_folder, model_type=scoring_type,
                        batch_size=args.batch_size, max_new_tokens=args.max_new_tokens,
-                       generation_kwargs=generation_kwargs, inferencer=inferencer)
+                       generation_kwargs=generation_kwargs, inferencer=inferencer,
+                       template_kwargs=template_kwargs)
     print(f"F1_type_agnostic={metrics['F1_micro_type_agnostic']:.4f}  "
           f"P={metrics['precision_type_agnostic']:.4f}  R={metrics['recall_type_agnostic']:.4f}  "
           f"n={metrics['n_samples']}")

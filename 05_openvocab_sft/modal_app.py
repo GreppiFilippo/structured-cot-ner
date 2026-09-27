@@ -92,7 +92,8 @@ def train(model_id: str, data_path: str, tag: str, hf_repo_id: str | None, extra
 
 @app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=8 * 3600)
 def evaluate_run(dataset: str, run_name: str, model_id: str, adapter: str | None = None,
-                 max_new_tokens: int = 6144, limit: int | None = None, subset_repo: str | None = None) -> dict:
+                 max_new_tokens: int = 6144, limit: int | None = None, subset_repo: str | None = None,
+                 extra: list[str] | None = None) -> dict:
     outputs.reload()  # see adapters / partial generations written by other containers
     cmd = ["python", "evaluate.py", "--model-type", "causal", "--engine", "vllm", "--model-id", model_id,
            "--run-name", run_name, "--dataset-name", dataset, "--output-dir", "/outputs/eval",
@@ -100,6 +101,7 @@ def evaluate_run(dataset: str, run_name: str, model_id: str, adapter: str | None
     cmd += ["--adapter", adapter] if adapter else []
     cmd += ["--limit", str(limit)] if limit else []
     cmd += ["--subset-repo-id", subset_repo] if subset_repo else []
+    cmd += list(extra or [])
     _run(cmd, f"{CODE}/04_evaluation")
     metrics = json.loads(Path(f"/outputs/eval/{dataset}/{run_name}/metrics.json").read_text())
     return {"dataset": dataset, "run": run_name, "F1": metrics["F1_micro_type_agnostic"],
@@ -132,7 +134,10 @@ def evaluate_grid(model_id: str, runs: list[tuple[str, str | None]], max_new_tok
     adapter: None (base model), an HF repo, or a path in the outputs
     volume (e.g. an adapter trained elsewhere and uploaded with
     `modal volume put tesi-outputs <dir> work/<tag>/adapter`)."""
-    jobs = [(ds, run, model_id, adapter, max_new_tokens, None, subset_repo) for run, adapter in runs for ds in datasets]
+    # a run name ending in "_nothink" evaluates with Qwen3's thinking disabled
+    jobs = [(ds, run, model_id, adapter, max_new_tokens, None, subset_repo,
+             ["--no-thinking"] if run.endswith("_nothink") else None)
+            for run, adapter in runs for ds in datasets]
     results = list(evaluate_run.starmap(jobs))
     for r in results:
         print(f"{r['run']:<28} {r['dataset']:<17} F1={r['F1']:.3f} P={r['P']:.2f} R={r['R']:.2f} "
@@ -148,7 +153,7 @@ def grid(model_id: str = "Qwen/Qwen3-1.7B", runs: str = "base", datasets: str = 
     parsed = []
     for item in runs.split(","):
         name, _, adapter = item.partition("=")
-        parsed.append((f"{slug}_{name}" if name == "base" else f"{slug}_sft_{name}", adapter or None))
+        parsed.append((f"{slug}_{name}" if name.startswith("base") else f"{slug}_sft_{name}", adapter or None))
     ds_list = datasets.split(",") if datasets else DATASETS
     for r in evaluate_grid.remote(model_id, parsed, datasets=ds_list, subset_repo=subset_repo or None):
         print(r)
