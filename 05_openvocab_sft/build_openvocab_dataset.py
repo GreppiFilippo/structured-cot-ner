@@ -58,6 +58,10 @@ _OLD_FORMAT_RE = re.compile(r"\bjson\b|\bexcluded (array|list)\b|\bentities (arr
 REASONING_FORMATS = {
     "qwen": lambda reasoning, answer: f"<think>\n{reasoning}\n</think>\n\n{answer}",
     "medgemma": lambda reasoning, answer: f"<unused94>thought\n{reasoning}<unused95>{answer}",
+    # label-only control: same examples, empty thinking block (Qwen3's own
+    # format for an answer without reasoning), so the only difference from
+    # "qwen" is the distilled reasoning itself
+    "qwen_label_only": lambda reasoning, answer: f"<think>\n\n</think>\n\n{answer}",
 }
 # reasoning for the prompts that request no entity type at all (the eval
 # subset has such rows, e.g. 8/100 of the first ncbi rows): the teacher never
@@ -124,6 +128,12 @@ def main() -> None:
                         help="Absent entity types added to each prompt (answered with []), sampled with "
                              "inverse frequency like the evaluation subset's distractors. Default 0: only "
                              "the row's own gold types.")
+    parser.add_argument("--subsample-types", action="store_true",
+                        help="Request only a random non-empty subset of each row's gold types (uniform size "
+                             "1..all), answering only for those. Without it every present type is always "
+                             "requested, and a fine-tuned model learns to put every entity it finds under "
+                             "whatever type is requested (observed: genes returned as DISEASE on ncbi) — "
+                             "the evaluation prompts likewise request only some of each text's types.")
     parser.add_argument("--keep-empty-gold", action="store_true",
                         help="Keep rows whose Pile-NER gold is empty (with 0 negatives their prompt asks "
                              "for no types at all, so they are dropped by default)")
@@ -201,6 +211,11 @@ def main() -> None:
                 continue
 
             types = list(gold)
+            if args.subsample_types and len(types) > 1:
+                rng_types = np.random.default_rng(args.seed + 1_000_003 + i)
+                k = int(rng_types.integers(1, len(types) + 1))
+                types = [types[j] for j in sorted(rng_types.choice(len(types), size=k, replace=False))]
+                stats["rows_with_unrequested_gold_types"] += k < len(gold)
             if args.n_negative_types:
                 rng = np.random.default_rng(args.seed + i)
                 pool = [t for t in rng.choice(all_types, size=4 * args.n_negative_types, p=weights) if t not in gold]
@@ -241,6 +256,9 @@ def main() -> None:
     print(f"  teacher entities absent from the gold:        {totals['teacher_entities_not_in_gold']} "
           f"({totals['teacher_entities_not_in_gold'] / max(n, 1):.2f} per example)")
     print(f"  examples where teacher entities == gold:      {stats['rows_fully_consistent'] / max(n, 1):.1%}")
+    if args.subsample_types:
+        print(f"  examples where some present types are NOT requested: "
+              f"{stats['rows_with_unrequested_gold_types'] / max(n, 1):.1%}")
     print(f"  reasoning talks about the old output format:  {totals['reasoning_mentions_old_format'] / max(n, 1):.1%}")
     print(f"  reasoning source: visible {stats['source_visible']}, "
           f"native_thinking_fallback {stats['source_native_thinking_fallback']}")

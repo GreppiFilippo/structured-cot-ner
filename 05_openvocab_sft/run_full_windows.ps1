@@ -19,7 +19,9 @@ param(
     [int]$MaxNewTokens = 4096,
     [int]$BatchSize = 8,
     [string]$OutputDir = "outputs_qwen",
-    [string[]]$Datasets = @("ncbi", "bc5cdr", "bc2gm", "bc4chemd", "AnatEM", "JNLPBA", "JNLPBA-Rare", "MedMentions-Rare", "biored")
+    [string[]]$Datasets = @("ncbi", "bc5cdr", "bc2gm", "bc4chemd", "AnatEM", "JNLPBA", "JNLPBA-Rare", "MedMentions-Rare", "biored"),
+    # train only (e.g. when the evaluation runs elsewhere, like Modal with vLLM)
+    [switch]$TrainOnly
 )
 
 # see run_pilot_windows.ps1 for why each of these is set
@@ -53,6 +55,7 @@ Step "Train $ModelId on $DataPath" {
         --output-dir "work\full_${slug}_$Tag" --skip-push
     Pop-Location
 }
+if ($TrainOnly) { Say "`n===== DONE (train only) ($(Get-Date -Format "yyyy-MM-dd HH:mm:ss")) ====="; exit 0 }
 foreach ($ds in $Datasets) {
     Step "Evaluate base $ModelId on $ds" {
         Push-Location "$root\04_evaluation"

@@ -107,18 +107,47 @@ def evaluate_run(dataset: str, run_name: str, model_id: str, adapter: str | None
 
 
 @app.function(volumes=VOLUMES, timeout=24 * 3600)
-def pipeline(model_id: str, slug: str, tag: str, hf_repo_id: str) -> list[dict]:
-    """Training and the base evaluations in parallel, then the fine-tuned
-    evaluations once the adapter exists. Runs on Modal, so the local
-    client can disconnect (modal run --detach)."""
-    training = train.spawn(model_id, HF_DATA, tag, hf_repo_id)
+def pipeline(model_id: str, slug: str, variants: list[tuple[str, str]]) -> list[dict]:
+    """Trains every (tag, data_path) variant in parallel while the base
+    model is evaluated, then evaluates each fine-tuned adapter as soon as
+    its training ends. Adapters stay in the outputs volume
+    (work/<slug>_<tag>/adapter). Runs on Modal, so the local client can
+    disconnect (modal run --detach)."""
+    trainings = {tag: train.spawn(model_id, data, f"{slug}_{tag}", None) for tag, data in variants}
     results = list(evaluate_run.starmap([(ds, f"{slug}_base", model_id) for ds in DATASETS]))
-    adapter = training.get()
-    results += list(evaluate_run.starmap([(ds, f"{slug}_sft_{tag}", model_id, adapter) for ds in DATASETS]))
+    for tag, call in trainings.items():
+        adapter = call.get()
+        results += list(evaluate_run.starmap([(ds, f"{slug}_sft_{tag}", model_id, adapter) for ds in DATASETS]))
     for r in results:
         print(f"{r['run']:<28} {r['dataset']:<17} F1={r['F1']:.3f} P={r['P']:.2f} R={r['R']:.2f} "
               f"parse_errors={r['parse_errors']}")
     return results
+
+
+@app.function(volumes=VOLUMES, timeout=24 * 3600)
+def evaluate_grid(model_id: str, runs: list[tuple[str, str | None]], max_new_tokens: int = 6144) -> list[dict]:
+    """Evaluates every (run_name, adapter) on the 9 benchmarks, in parallel.
+    adapter: None (base model), an HF repo, or a path in the outputs
+    volume (e.g. an adapter trained elsewhere and uploaded with
+    `modal volume put tesi-outputs <dir> work/<tag>/adapter`)."""
+    jobs = [(ds, run, model_id, adapter, max_new_tokens) for run, adapter in runs for ds in DATASETS]
+    results = list(evaluate_run.starmap(jobs))
+    for r in results:
+        print(f"{r['run']:<28} {r['dataset']:<17} F1={r['F1']:.3f} P={r['P']:.2f} R={r['R']:.2f} "
+              f"parse_errors={r['parse_errors']}")
+    return results
+
+
+@app.local_entrypoint()
+def grid(model_id: str = "Qwen/Qwen3-1.7B", runs: str = "base"):
+    """e.g. --runs base,v3=/outputs/work/qwen3-1.7b_v3/adapter  (run names get the model slug prefix)"""
+    slug = model_id.split("/")[-1].lower()
+    parsed = []
+    for item in runs.split(","):
+        name, _, adapter = item.partition("=")
+        parsed.append((f"{slug}_{name}" if name == "base" else f"{slug}_sft_{name}", adapter or None))
+    for r in evaluate_grid.remote(model_id, parsed):
+        print(r)
 
 
 @app.local_entrypoint()
@@ -139,8 +168,10 @@ def smoke_eval(adapter: str = ""):
 
 
 @app.local_entrypoint()
-def full(model_id: str = "Qwen/Qwen3-4B", tag: str = "v3",
-         hf_repo_id: str = "filippogreppi/Qwen3-4B-openvocab-cot-v3-modal"):
+def full(model_id: str = "Qwen/Qwen3-4B",
+         variants: str = "v4=openvocab_train_v4_qwen.jsonl,v4lo=openvocab_train_v4_labelonly.jsonl"):
+    """variants: tag=<file in the filippogreppi/openvocab-cot-sft dataset repo>, comma-separated"""
     slug = model_id.split("/")[-1].lower()
-    for r in pipeline.remote(model_id, slug, tag, hf_repo_id):
+    parsed = [(tag, f"hf://filippogreppi/openvocab-cot-sft/{f}") for tag, f in (v.split("=") for v in variants.split(","))]
+    for r in pipeline.remote(model_id, slug, parsed):
         print(r)
