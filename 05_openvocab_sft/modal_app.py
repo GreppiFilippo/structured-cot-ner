@@ -92,13 +92,14 @@ def train(model_id: str, data_path: str, tag: str, hf_repo_id: str | None, extra
 
 @app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=8 * 3600)
 def evaluate_run(dataset: str, run_name: str, model_id: str, adapter: str | None = None,
-                 max_new_tokens: int = 6144, limit: int | None = None) -> dict:
+                 max_new_tokens: int = 6144, limit: int | None = None, subset_repo: str | None = None) -> dict:
     outputs.reload()  # see adapters / partial generations written by other containers
     cmd = ["python", "evaluate.py", "--model-type", "causal", "--engine", "vllm", "--model-id", model_id,
            "--run-name", run_name, "--dataset-name", dataset, "--output-dir", "/outputs/eval",
            "--max-new-tokens", str(max_new_tokens), "--do-sample", "--batch-size", "100"]
     cmd += ["--adapter", adapter] if adapter else []
     cmd += ["--limit", str(limit)] if limit else []
+    cmd += ["--subset-repo-id", subset_repo] if subset_repo else []
     _run(cmd, f"{CODE}/04_evaluation")
     metrics = json.loads(Path(f"/outputs/eval/{dataset}/{run_name}/metrics.json").read_text())
     return {"dataset": dataset, "run": run_name, "F1": metrics["F1_micro_type_agnostic"],
@@ -125,12 +126,13 @@ def pipeline(model_id: str, slug: str, variants: list[tuple[str, str]]) -> list[
 
 
 @app.function(volumes=VOLUMES, timeout=24 * 3600)
-def evaluate_grid(model_id: str, runs: list[tuple[str, str | None]], max_new_tokens: int = 6144) -> list[dict]:
+def evaluate_grid(model_id: str, runs: list[tuple[str, str | None]], max_new_tokens: int = 6144,
+                  datasets: list[str] = DATASETS, subset_repo: str | None = None) -> list[dict]:
     """Evaluates every (run_name, adapter) on the 9 benchmarks, in parallel.
     adapter: None (base model), an HF repo, or a path in the outputs
     volume (e.g. an adapter trained elsewhere and uploaded with
     `modal volume put tesi-outputs <dir> work/<tag>/adapter`)."""
-    jobs = [(ds, run, model_id, adapter, max_new_tokens) for run, adapter in runs for ds in DATASETS]
+    jobs = [(ds, run, model_id, adapter, max_new_tokens, None, subset_repo) for run, adapter in runs for ds in datasets]
     results = list(evaluate_run.starmap(jobs))
     for r in results:
         print(f"{r['run']:<28} {r['dataset']:<17} F1={r['F1']:.3f} P={r['P']:.2f} R={r['R']:.2f} "
@@ -139,14 +141,16 @@ def evaluate_grid(model_id: str, runs: list[tuple[str, str | None]], max_new_tok
 
 
 @app.local_entrypoint()
-def grid(model_id: str = "Qwen/Qwen3-1.7B", runs: str = "base"):
-    """e.g. --runs base,v3=/outputs/work/qwen3-1.7b_v3/adapter  (run names get the model slug prefix)"""
+def grid(model_id: str = "Qwen/Qwen3-1.7B", runs: str = "base", datasets: str = "", subset_repo: str = ""):
+    """e.g. --runs base,v3=/outputs/work/qwen3-1.7b_v3/adapter  (run names get the model slug prefix);
+    --datasets pilener --subset-repo filippogreppi/pilener-eval-subset for the in-domain Pile-NER set"""
     slug = model_id.split("/")[-1].lower()
     parsed = []
     for item in runs.split(","):
         name, _, adapter = item.partition("=")
         parsed.append((f"{slug}_{name}" if name == "base" else f"{slug}_sft_{name}", adapter or None))
-    for r in evaluate_grid.remote(model_id, parsed):
+    ds_list = datasets.split(",") if datasets else DATASETS
+    for r in evaluate_grid.remote(model_id, parsed, datasets=ds_list, subset_repo=subset_repo or None):
         print(r)
 
 
