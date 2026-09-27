@@ -101,6 +101,69 @@ class BatchInferencer:
                 torch.cuda.empty_cache()
 
 
+class VLLMInferencer:
+    """Same interface as BatchInferencer, generation with vLLM instead of
+    transformers (continuous batching: every row of a chunk is generated
+    concurrently, which for thinking models with long, uneven replies is
+    one to two orders of magnitude faster). Prompts are rendered with the
+    same chat template, and replies are post-processed the same way, so
+    parsing and scoring are unchanged. Outputs differ slightly from the
+    transformers engine (different kernels and random streams): compare
+    models evaluated with the same engine.
+
+    A LoRA adapter is applied by vLLM itself (LoRARequest), after checking
+    its weights are non-zero, like check_adapter_applied does."""
+
+    def __init__(self, model_id, adapter=None, max_new_tokens=4096, generation_kwargs=None, seed=0,
+                 hf_token=None, max_model_len=None):
+        from vllm import LLM, SamplingParams
+
+        self._tok = transformers.AutoTokenizer.from_pretrained(model_id, token=hf_token)
+        self._lora = None
+        if adapter:
+            from vllm.lora.request import LoRARequest
+
+            path = adapter if os.path.isdir(adapter) else _download_adapter(adapter, hf_token)
+            _check_adapter_files(path)
+            self._lora = LoRARequest("adapter", 1, path)
+            rank = json.loads((Path(path) / "adapter_config.json").read_text())["r"]
+        self._llm = LLM(model=model_id, dtype="bfloat16", seed=seed, enable_lora=bool(adapter),
+                        max_lora_rank=max(16, rank) if adapter else 16,
+                        max_model_len=max_model_len or max_new_tokens + 4096, gpu_memory_utilization=0.9)
+        gk = generation_kwargs or {"do_sample": False}
+        if gk.get("do_sample"):
+            self._params = SamplingParams(max_tokens=max_new_tokens, temperature=gk["temperature"],
+                                          top_p=gk["top_p"], top_k=gk["top_k"], skip_special_tokens=False)
+        else:
+            self._params = SamplingParams(max_tokens=max_new_tokens, temperature=0.0, skip_special_tokens=False)
+
+    def disable_gradient_checkpointing(self):
+        pass
+
+    def generate(self, prompts):
+        texts = [self._tok.apply_chat_template(p, add_generation_prompt=True, tokenize=False) for p in prompts]
+        outputs = self._llm.generate(texts, self._params, lora_request=self._lora, use_tqdm=False)
+        return [_PADDING_TOKEN_RE.sub("", _END_OF_TURN_RE.split(o.outputs[0].text)[0]).strip() for o in outputs]
+
+
+def _download_adapter(repo_id, hf_token):
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(repo_id, token=hf_token)
+
+
+def _check_adapter_files(path):
+    """check_adapter_applied for an adapter that vLLM loads itself."""
+    from safetensors.torch import load_file
+
+    weights = load_file(str(Path(path) / "adapter_model.safetensors"))
+    lora_b = [t for k, t in weights.items() if "lora_B" in k]
+    trained = sum(int(t.abs().max().item() > 0) for t in lora_b)
+    print(f"  [adapter check] {path}: {trained}/{len(lora_b)} LoRA B matrices non-zero")
+    if not trained:
+        raise SystemExit(f"adapter {path}: every LoRA B matrix is zero — nothing was trained or loaded")
+
+
 # --- Model loading ---
 
 
@@ -199,12 +262,13 @@ def build_prompts(batch, model_type, cot_prompt_builder):
 
 
 def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4, max_new_tokens=512,
-             generation_kwargs=None):
+             generation_kwargs=None, inferencer=None):
     save_folder = Path(save_folder)
     save_folder.mkdir(parents=True, exist_ok=True)
 
-    inferencer = BatchInferencer(model=model, processor=processor, max_new_tokens=max_new_tokens,
-                                 generation_kwargs=generation_kwargs)
+    if inferencer is None:
+        inferencer = BatchInferencer(model=model, processor=processor, max_new_tokens=max_new_tokens,
+                                     generation_kwargs=generation_kwargs)
     inferencer.disable_gradient_checkpointing()
 
     # "cot" / "cot_typed" differ from the closed-schema models in their
@@ -286,6 +350,12 @@ def main() -> None:
     causal.add_argument("--top-p", type=float, default=0.95)
     causal.add_argument("--top-k", type=int, default=20)
     causal.add_argument("--seed", type=int, default=0)
+    causal.add_argument("--engine", choices=["transformers", "vllm"], default="transformers",
+                        help="Generation engine for --model-type causal. vllm is much faster for thinking "
+                             "models; --batch-size is then the number of rows generated together (and "
+                             "saved for resuming) per chunk, e.g. 100.")
+    causal.add_argument("--max-model-len", type=int, default=None,
+                        help="vllm only: prompt + reply token budget (default: max-new-tokens + 4096)")
     parser.add_argument("--allow-missing-all-gold", action="store_true",
                          help="For --model-type cot only: run even if the subset has no 'all_gold' column, "
                               "scoring against the closed-schema prompt's gold instead. That gold omits every "
@@ -330,10 +400,18 @@ def main() -> None:
     print(f"Loading {args.model_type} model...")
     generation_kwargs = None
     if args.do_sample:
-        transformers.set_seed(args.seed)
+        if args.engine != "vllm":  # vLLM seeds itself; initializing CUDA here would break its engine process
+            transformers.set_seed(args.seed)
         generation_kwargs = {"do_sample": True, "temperature": args.temperature,
                              "top_p": args.top_p, "top_k": args.top_k}
-    if args.model_type == "causal":
+    inferencer = None
+    if args.engine == "vllm":
+        if args.model_type != "causal":
+            raise SystemExit("--engine vllm is only supported with --model-type causal")
+        model, processor = None, None
+        inferencer = VLLMInferencer(args.model_id, args.adapter, args.max_new_tokens, generation_kwargs,
+                                    args.seed, hf_token, args.max_model_len)
+    elif args.model_type == "causal":
         model, processor = load_causal(args.model_id, args.adapter, hf_token, args.load_in_4bit)
     elif args.model_type == "medgemma":
         model, processor = (_load_adapter(args.adapter, hf_token, verbose=True) if args.adapter
@@ -352,7 +430,7 @@ def main() -> None:
     scoring_type = "baseline" if named_run else args.model_type
     metrics = evaluate(model, processor, test_data, save_folder, model_type=scoring_type,
                        batch_size=args.batch_size, max_new_tokens=args.max_new_tokens,
-                       generation_kwargs=generation_kwargs)
+                       generation_kwargs=generation_kwargs, inferencer=inferencer)
     print(f"F1_type_agnostic={metrics['F1_micro_type_agnostic']:.4f}  "
           f"P={metrics['precision_type_agnostic']:.4f}  R={metrics['recall_type_agnostic']:.4f}  "
           f"n={metrics['n_samples']}")
@@ -365,7 +443,8 @@ def main() -> None:
               f"F1_type_exact={m['F1_micro']:.4f}")
     print(f"parse_status_counts={metrics['parse_status_counts']}  gold_source={metrics['gold_source']}")
 
-    unload_model(model)
+    if model is not None:
+        unload_model(model)
     print(f"Done. Results in {save_folder}")
 
 
