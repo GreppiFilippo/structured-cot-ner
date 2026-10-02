@@ -146,7 +146,12 @@ class VLLMInferencer:
     def generate(self, prompts):
         texts = [self._tok.apply_chat_template(p, add_generation_prompt=True, tokenize=False, **self._template_kwargs)
                  for p in prompts]
-        outputs = self._llm.generate(texts, self._params, lora_request=self._lora, use_tqdm=False)
+        # The rendered template already starts with the BOS token where the model has one (Gemma:
+        # "<bos><start_of_turn>..."); a text prompt would be re-tokenized by vLLM WITH special
+        # tokens, doubling it — Gemma then answers very differently (MedGemma stopped reasoning).
+        # Token ids without added special tokens = exactly what the transformers engine feeds.
+        token_prompts = [{"prompt_token_ids": self._tok(t, add_special_tokens=False)["input_ids"]} for t in texts]
+        outputs = self._llm.generate(token_prompts, self._params, lora_request=self._lora, use_tqdm=False)
         return [_PADDING_TOKEN_RE.sub("", _END_OF_TURN_RE.split(o.outputs[0].text)[0]).strip() for o in outputs]
 
 
@@ -355,7 +360,7 @@ def main() -> None:
     causal.add_argument("--top-k", type=int, default=20)
     causal.add_argument("--seed", type=int, default=0)
     causal.add_argument("--engine", choices=["transformers", "vllm"], default="transformers",
-                        help="Generation engine for --model-type causal. vllm is much faster for thinking "
+                        help="Generation engine for --model-type causal or medgemma. vllm is much faster for thinking "
                              "models; --batch-size is then the number of rows generated together (and "
                              "saved for resuming) per chunk, e.g. 100.")
     causal.add_argument("--no-thinking", action="store_true",
@@ -414,10 +419,12 @@ def main() -> None:
     inferencer = None
     template_kwargs = {"enable_thinking": False} if args.no_thinking else None
     if args.engine == "vllm":
-        if args.model_type != "causal":
-            raise SystemExit("--engine vllm is only supported with --model-type causal")
+        if args.model_type not in ("causal", "medgemma"):
+            raise SystemExit("--engine vllm is only supported with --model-type causal or medgemma")
         model, processor = None, None
-        inferencer = VLLMInferencer(args.model_id, args.adapter, args.max_new_tokens, generation_kwargs,
+        # medgemma: MedGemma-1.5 itself (vLLM serves its language model and any LoRA on it)
+        vllm_model_id = BASE_MODEL_ID if args.model_type == "medgemma" else args.model_id
+        inferencer = VLLMInferencer(vllm_model_id, args.adapter, args.max_new_tokens, generation_kwargs,
                                     args.seed, hf_token, args.max_model_len, template_kwargs)
     elif args.model_type == "causal":
         model, processor = load_causal(args.model_id, args.adapter, hf_token, args.load_in_4bit)
