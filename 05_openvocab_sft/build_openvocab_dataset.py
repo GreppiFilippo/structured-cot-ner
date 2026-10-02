@@ -23,6 +23,14 @@ or never mention spans the gold contains. A summary is printed at the end;
 --drop-teacher-excluded-gold removes rows where the teacher explicitly
 rejected a gold span.
 
+--target teacher replaces the Pile-NER gold with the teacher's OWN
+entities, produced at the end of the same reasoning that precedes them (as
+in ReasoningNER, where reasoning and labels come from the same teacher call):
+the requested types are the teacher's labels in the evaluation's UPPER_SNAKE
+style (MedicalCondition -> MEDICAL_CONDITION), so reasoning and answer
+cannot contradict each other. Rows with a teacher entity that does not occur
+verbatim in the text are dropped.
+
 Usage:
     python3 build_openvocab_dataset.py \\
         --extractions free_cot_merged.jsonl \\
@@ -46,7 +54,7 @@ _WORD_RE = re.compile(r"\w+")
 # the teacher reasoning was written for the open-schema output format; a
 # trace that talks about that format ("the excluded array", "entities",
 # "schema", JSON) no longer matches the new target
-_OLD_FORMAT_RE = re.compile(r"\bjson\b|\bexcluded (array|list)\b|\bentities (array|list)\b|\"excluded\"|\"entities\"|\bschema\b",
+_OLD_FORMAT_RE = re.compile(r"\bjson\b|\bexcluded (arrays?|lists?|sections?|fields?|candidates)\b|\bentities (arrays?|lists?)\b|\b(entities|excluded) (and|or) (entities|excluded)\b|\"excluded\"|\"entities\"|\bschema\b",
                             re.IGNORECASE)
 
 
@@ -99,6 +107,31 @@ def _mentioned(span: str, text: str) -> bool:
     return bool(w) and f" {' '.join(w)} " in f" {' '.join(_words(text))} "
 
 
+def to_upper_snake(label: str) -> str:
+    """Teacher label -> the evaluation's type style: MedicalCondition ->
+    MEDICAL_CONDITION, "Sports team" -> SPORTS_TEAM."""
+    label = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", label.strip())
+    return re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_").upper()
+
+
+def teacher_target(row: dict) -> dict[str, list[str]] | None:
+    """{TYPE: [span, ...]} from the teacher's own entities, or None when one
+    of them does not occur verbatim in the text."""
+    out: dict[str, list[str]] = {}
+    text = row["span"].lower()
+    for e in row.get("entities") or []:
+        if not isinstance(e, dict) or not str(e.get("text", "")).strip():
+            continue
+        if str(e["text"]).lower() not in text:
+            return None
+        label = to_upper_snake(str(e.get("label") or e.get("type") or ""))
+        if label:
+            out.setdefault(label, [])
+            if e["text"] not in out[label]:
+                out[label].append(e["text"])
+    return out
+
+
 def dedupe_gold(gold: dict[str, list[str]]) -> dict[str, list[str]]:
     return {t: list(dict.fromkeys(spans)) for t, spans in gold.items()}
 
@@ -148,6 +181,9 @@ def main() -> None:
                         help="Turn this many rows with empty gold into prompts that request NO entity type "
                              "(ENTITY TYPES: []), answered with {} after a short fixed reasoning. Requires "
                              "--keep-empty-gold; the remaining empty-gold rows keep their negative types.")
+    parser.add_argument("--target", choices=["gold", "teacher"], default="gold",
+                        help="gold: the original Pile-NER annotation (default). teacher: the teacher's own "
+                             "entities and labels, consistent with its reasoning (see module docstring)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -164,6 +200,16 @@ def main() -> None:
     missing = len(keep_ids) - len(rows)
     print(f"{len(rows)} selected rows found in {args.extractions}" + (f" ({missing} ids not found)" if missing else ""))
 
+    if args.target == "teacher":
+        kept = []
+        for r in rows:
+            t = teacher_target(r)
+            if t is None:
+                continue
+            r["gold"] = t  # the rest of the pipeline treats it as the row's annotation
+            kept.append(r)
+        print(f"--target teacher: {len(rows) - len(kept)} rows dropped (teacher entity not verbatim in the text)")
+        rows = kept
     type_freq = Counter(t for r in rows for t in r["gold"])
     all_types = np.array(sorted(type_freq), dtype=object)
     inv = np.array([1.0 / type_freq[t] for t in all_types])

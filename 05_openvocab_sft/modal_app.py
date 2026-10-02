@@ -36,6 +36,9 @@ GPU = "L40S"  # 48 GB, faster than an RTX 3090; ~2 $/h
 
 DATASETS = ["ncbi", "bc5cdr", "bc2gm", "bc4chemd", "AnatEM", "JNLPBA", "JNLPBA-Rare", "MedMentions-Rare", "biored"]
 HF_DATA = "hf://filippogreppi/openvocab-cot-sft/openvocab_train_v3_qwen.jsonl"
+# the 9 benchmarks + the in-domain Pile-NER test (its own subset repo)
+ALL = DATASETS + ["pilener"]
+PILENER = "filippogreppi/pilener-eval-subset"
 
 # CUDA *devel* base (nvcc): vLLM JIT-compiles some kernels at startup. Its
 # CUDA version must match the torch wheel vLLM pulls in (cu130 for 0.30.0).
@@ -95,9 +98,13 @@ def evaluate_run(dataset: str, run_name: str, model_id: str, adapter: str | None
                  max_new_tokens: int = 6144, limit: int | None = None, subset_repo: str | None = None,
                  extra: list[str] | None = None) -> dict:
     outputs.reload()  # see adapters / partial generations written by other containers
-    cmd = ["python", "evaluate.py", "--model-type", "causal", "--engine", "vllm", "--model-id", model_id,
-           "--run-name", run_name, "--dataset-name", dataset, "--output-dir", "/outputs/eval",
-           "--max-new-tokens", str(max_new_tokens), "--do-sample", "--batch-size", "100"]
+    # MedGemma (no native thinking mode) is decoded greedily, like its earlier baseline runs;
+    # Qwen3 in thinking mode must be sampled (its model card warns against greedy decoding)
+    medgemma = "medgemma" in model_id.lower()
+    cmd = ["python", "evaluate.py", "--model-type", "medgemma" if medgemma else "causal", "--engine", "vllm",
+           "--model-id", model_id, "--run-name", run_name, "--dataset-name", dataset,
+           "--output-dir", "/outputs/eval", "--max-new-tokens", str(max_new_tokens), "--batch-size", "100"]
+    cmd += [] if medgemma else ["--do-sample"]
     cmd += ["--adapter", adapter] if adapter else []
     cmd += ["--limit", str(limit)] if limit else []
     cmd += ["--subset-repo-id", subset_repo] if subset_repo else []
@@ -110,17 +117,19 @@ def evaluate_run(dataset: str, run_name: str, model_id: str, adapter: str | None
 
 
 @app.function(volumes=VOLUMES, timeout=24 * 3600)
-def pipeline(model_id: str, slug: str, variants: list[tuple[str, str]]) -> list[dict]:
+def pipeline(model_id: str, slug: str, variants: list[tuple[str, str]], eval_base: bool = True) -> list[dict]:
     """Trains every (tag, data_path) variant in parallel while the base
     model is evaluated, then evaluates each fine-tuned adapter as soon as
     its training ends. Adapters stay in the outputs volume
     (work/<slug>_<tag>/adapter). Runs on Modal, so the local client can
     disconnect (modal run --detach)."""
     trainings = {tag: train.spawn(model_id, data, f"{slug}_{tag}", None) for tag, data in variants}
-    results = list(evaluate_run.starmap([(ds, f"{slug}_base", model_id) for ds in DATASETS]))
+    results = list(evaluate_run.starmap([(ds, f"{slug}_base", model_id, None, 6144, None,
+                                          PILENER if ds == "pilener" else None) for ds in ALL])) if eval_base else []
     for tag, call in trainings.items():
         adapter = call.get()
-        results += list(evaluate_run.starmap([(ds, f"{slug}_sft_{tag}", model_id, adapter) for ds in DATASETS]))
+        results += list(evaluate_run.starmap([(ds, f"{slug}_sft_{tag}", model_id, adapter, 6144, None,
+                                                PILENER if ds == "pilener" else None) for ds in ALL]))
     for r in results:
         print(f"{r['run']:<28} {r['dataset']:<17} F1={r['F1']:.3f} P={r['P']:.2f} R={r['R']:.2f} "
               f"parse_errors={r['parse_errors']}")
@@ -170,17 +179,18 @@ def smoke():
 
 
 @app.local_entrypoint()
-def smoke_eval(adapter: str = ""):
+def smoke_eval(adapter: str = "", model_id: str = "Qwen/Qwen3-1.7B", run_name: str = ""):
     """Only the vLLM evaluation path, 5 rows of ncbi."""
-    print(evaluate_run.remote("ncbi", "smoke_eval_sft" if adapter else "smoke_eval_base", "Qwen/Qwen3-1.7B",
+    print(evaluate_run.remote("ncbi", run_name or ("smoke_eval_sft" if adapter else "smoke_eval_base"), model_id,
                               adapter or None, max_new_tokens=2048, limit=5))
 
 
 @app.local_entrypoint()
 def full(model_id: str = "Qwen/Qwen3-4B",
-         variants: str = "v4=openvocab_train_v4_qwen.jsonl,v4lo=openvocab_train_v4_labelonly.jsonl"):
+         variants: str = "v4=openvocab_train_v4_qwen.jsonl,v4lo=openvocab_train_v4_labelonly.jsonl",
+         eval_base: bool = True):
     """variants: tag=<file in the filippogreppi/openvocab-cot-sft dataset repo>, comma-separated"""
     slug = model_id.split("/")[-1].lower()
     parsed = [(tag, f"hf://filippogreppi/openvocab-cot-sft/{f}") for tag, f in (v.split("=") for v in variants.split(","))]
-    for r in pipeline.remote(model_id, slug, parsed):
+    for r in pipeline.remote(model_id, slug, parsed, eval_base):
         print(r)

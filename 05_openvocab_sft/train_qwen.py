@@ -148,8 +148,14 @@ def main() -> None:
     model.config.use_cache = False
     if args.load_in_4bit:
         model = peft.prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    proj = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    # multimodal checkpoints (e.g. MedGemma = Gemma3ForConditionalGeneration) also have q/k/v
+    # projections in the vision tower, which text-only training would never update: restrict
+    # LoRA to the language model there. Text-only models (Qwen3) keep the plain module list.
+    is_multimodal = any("vision" in n for n, _ in model.named_modules())
+    target = rf".*language_model.*\.({'|'.join(proj)})" if is_multimodal else proj
     lora = peft.LoraConfig(r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=0.05, task_type="CAUSAL_LM",
-                           target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
+                           target_modules=target)
     model = peft.get_peft_model(model, lora)
     model.print_trainable_parameters()
 
