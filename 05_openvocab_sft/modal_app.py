@@ -143,9 +143,13 @@ def evaluate_grid(model_id: str, runs: list[tuple[str, str | None]], max_new_tok
     adapter: None (base model), an HF repo, or a path in the outputs
     volume (e.g. an adapter trained elsewhere and uploaded with
     `modal volume put tesi-outputs <dir> work/<tag>/adapter`)."""
-    # a run name ending in "_nothink" evaluates with Qwen3's thinking disabled
-    jobs = [(ds, run, model_id, adapter, max_new_tokens, None, subset_repo,
-             ["--no-thinking"] if run.endswith("_nothink") else None)
+    # a run name ending in "_nothink" evaluates with Qwen3's thinking disabled; one ending in
+    # "_desc" adds zero-shot entity-type definitions to the prompt (04_evaluation/type_descriptions_bio.json)
+    def extra(run, ds):
+        desc = "type_descriptions_crossner.json" if ds.startswith("crossner") else "type_descriptions_bio.json"
+        return (["--no-thinking"] if run.endswith("_nothink") else
+                ["--type-descriptions", desc] if run.endswith("_desc") else None)
+    jobs = [(ds, run, model_id, adapter, max_new_tokens, None, subset_repo, extra(run, ds))
             for run, adapter in runs for ds in datasets]
     results = list(evaluate_run.starmap(jobs))
     for r in results:

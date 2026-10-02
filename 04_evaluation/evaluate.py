@@ -261,17 +261,31 @@ def requested_types(row):
     return list(parse_gold(row["messages"][-1]["content"]).keys())
 
 
-def build_prompts(batch, model_type, cot_prompt_builder):
+def add_type_descriptions(messages, descriptions):
+    """Appends a definition of each requested entity type to the user turn (closed-schema prompt),
+    right after the ENTITY TYPES list; types without a description are listed as-is."""
+    user = messages[1]["content"]
+    types = json.loads(user.split("ENTITY TYPES:\n", 1)[1].strip())
+    if not types:
+        return messages
+    lines = "\n".join(f"- {t}: {descriptions.get(t, '(no definition)')}" for t in types)
+    user = user.rstrip("\n") + f"\n\nENTITY TYPE DEFINITIONS:\n{lines}\n"
+    return [messages[0], {"role": "user", "content": user}]
+
+
+def build_prompts(batch, model_type, cot_prompt_builder, type_descriptions=None):
     if model_type == "cot":
         return [[{"role": "user", "content": cot_prompt_builder.build(row["raw_text"])}] for row in batch]
     if model_type == "cot_typed":
         return [[{"role": "user", "content": cot_prompt_builder.build_typed(row["raw_text"], requested_types(row))}]
                 for row in batch]
+    if type_descriptions:
+        return [add_type_descriptions(row["messages"][:-1], type_descriptions) for row in batch]
     return [row["messages"][:-1] for row in batch]
 
 
 def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4, max_new_tokens=512,
-             generation_kwargs=None, inferencer=None, template_kwargs=None):
+             generation_kwargs=None, inferencer=None, template_kwargs=None, type_descriptions=None):
     save_folder = Path(save_folder)
     save_folder.mkdir(parents=True, exist_ok=True)
 
@@ -308,7 +322,7 @@ def evaluate(model, processor, test_data, save_folder, model_type, batch_size=4,
         for start in tqdm(range(0, len(todo), batch_size), desc=save_folder.name, leave=False):
             idxs = todo[start:start + batch_size]
             batch = [test_data[i] for i in idxs]
-            preds_raw = inferencer.generate(build_prompts(batch, model_type, cot_prompt_builder))
+            preds_raw = inferencer.generate(build_prompts(batch, model_type, cot_prompt_builder, type_descriptions))
             for i, pred_raw in zip(idxs, preds_raw):
                 done[i] = pred_raw
                 partial.write(json.dumps({"idx": i, "pred_raw": pred_raw}, ensure_ascii=False) + "\n")
@@ -368,6 +382,9 @@ def main() -> None:
                              "<think></think>, so the model answers directly) — zero-shot without native reasoning")
     causal.add_argument("--max-model-len", type=int, default=None,
                         help="vllm only: prompt + reply token budget (default: max-new-tokens + 4096)")
+    parser.add_argument("--type-descriptions", default=None,
+                        help="JSON {entity type: definition}: appended to the prompt after the ENTITY TYPES list "
+                             "(closed-schema prompt only); scoring is unchanged")
     parser.add_argument("--allow-missing-all-gold", action="store_true",
                          help="For --model-type cot only: run even if the subset has no 'all_gold' column, "
                               "scoring against the closed-schema prompt's gold instead. That gold omits every "
@@ -446,7 +463,9 @@ def main() -> None:
     metrics = evaluate(model, processor, test_data, save_folder, model_type=scoring_type,
                        batch_size=args.batch_size, max_new_tokens=args.max_new_tokens,
                        generation_kwargs=generation_kwargs, inferencer=inferencer,
-                       template_kwargs=template_kwargs)
+                       template_kwargs=template_kwargs,
+                       type_descriptions=json.loads(Path(args.type_descriptions).read_text())
+                       if args.type_descriptions else None)
     print(f"F1_type_agnostic={metrics['F1_micro_type_agnostic']:.4f}  "
           f"P={metrics['precision_type_agnostic']:.4f}  R={metrics['recall_type_agnostic']:.4f}  "
           f"n={metrics['n_samples']}")
