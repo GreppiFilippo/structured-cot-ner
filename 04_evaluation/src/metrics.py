@@ -31,6 +31,14 @@ METRIC_VERSION history:
       false positives. Per-row counts are also stored in predictions.jsonl
       so significance.py can bootstrap without re-parsing. The v2 numbers
       themselves are unchanged.
+  4 — (2026-10-15) adds an exact-match metric next to every existing one,
+      as requested for the structured-CoT experiments: a predicted mention
+      counts only if it equals a gold mention of the SAME type after
+      case-folding and whitespace normalization (no partial credit, no
+      punctuation removal). Mentions are compared as sets per type, so
+      duplicates count once. Stored as F1_exact / precision_exact /
+      recall_exact, with per-row counts in "counts_exact". The v3 numbers
+      are unchanged.
 """
 from __future__ import annotations
 
@@ -41,7 +49,7 @@ from collections import Counter, defaultdict
 import numpy as np
 from scipy import optimize as sp_optimize
 
-METRIC_VERSION = 3
+METRIC_VERSION = 4
 
 # model types that are given a list of entity types in the prompt
 OPEN_SCHEMA_MODEL_TYPES = {"cot"}
@@ -85,6 +93,26 @@ def compute_entity_counts(gt_spans, pred_spans):
     M = np.array([[iou(g, p) for p in pred_spans] for g in gt_spans])
     r, c = sp_optimize.linear_sum_assignment(-M)
     return float(M[r, c].sum()), gc_, pc
+
+
+def _norm_mention(span):
+    """Exact-match key: case-folded, surrounding and repeated whitespace
+    collapsed; punctuation and word boundaries are kept as they are."""
+    return " ".join(span.casefold().split())
+
+
+def exact_counts(gold, pred):
+    """Exact, typed matching (METRIC_VERSION 4): for every type, the TP are
+    the normalized mentions present in both the gold and the prediction of
+    that type. Returns (tp, gt, pred) summed over all types."""
+    tp = gt = pc = 0
+    for etype in set(gold) | set(pred):
+        g = {_norm_mention(m) for m in gold.get(etype, []) if _norm_mention(m)}
+        q = {_norm_mention(m) for m in pred.get(etype, []) if _norm_mention(m)}
+        tp += len(g & q)
+        gt += len(g)
+        pc += len(q)
+    return tp, gt, pc
 
 
 def f1_from_counts(tp, gt, pred):
@@ -289,13 +317,14 @@ class Scorer:
         self.requested_types_only = requested_types_only
         self.tp = self.gt = self.pred = 0.0
         self.tp_ta = self.gt_ta = self.pred_ta = 0.0
+        self.tp_ex = self.gt_ex = self.pred_ex = 0
         self.per_entity = defaultdict(lambda: [0.0, 0, 0])
         self.parse_counts = Counter()
         self.n = 0
 
     def add(self, gold, pred, status):
         """Scores one row; returns (row_f1, row_f1_type_agnostic,
-        [tp, gt, pred] type-agnostic counts of the row)."""
+        [tp, gt, pred] type-agnostic counts, [tp, gt, pred] exact counts)."""
         if self.requested_types_only:
             pred = {k: v for k, v in pred.items() if k in gold}
         self.n += 1
@@ -323,8 +352,13 @@ class Scorer:
         self.gt_ta += gt_ta
         self.pred_ta += pred_ta
 
+        tp_ex, gt_ex, pred_ex = exact_counts(gold, pred)
+        self.tp_ex += tp_ex
+        self.gt_ex += gt_ex
+        self.pred_ex += pred_ex
+
         return (f1_from_counts(tp_s, gt_s, pred_s), f1_from_counts(tp_ta, gt_ta, pred_ta),
-                [tp_ta, gt_ta, pred_ta])
+                [tp_ta, gt_ta, pred_ta], [tp_ex, gt_ex, pred_ex])
 
     def metrics(self):
         return {
@@ -339,6 +373,10 @@ class Scorer:
             "TP": float(self.tp), "GT": int(self.gt), "PRED": int(self.pred),
             "TP_type_agnostic": float(self.tp_ta), "GT_type_agnostic": int(self.gt_ta),
             "PRED_type_agnostic": int(self.pred_ta),
+            "F1_exact": f1_from_counts(self.tp_ex, self.gt_ex, self.pred_ex),
+            "precision_exact": (self.tp_ex / self.pred_ex) if self.pred_ex else 0.0,
+            "recall_exact": (self.tp_ex / self.gt_ex) if self.gt_ex else 0.0,
+            "TP_exact": int(self.tp_ex), "GT_exact": int(self.gt_ex), "PRED_exact": int(self.pred_ex),
             "parse_status_counts": dict(self.parse_counts),
         }
 
@@ -373,11 +411,12 @@ def score_run(items, model_type):
         pred, status = parser.parse(pred_raw)
         rec = {"idx": idx, "parse_status": status, "gold_source": gold_source}
         for name, scorer in scorers.items():
-            f1, f1_ta, counts = scorer.add(gold, pred, status)
+            f1, f1_ta, counts, counts_ex = scorer.add(gold, pred, status)
             suffix = "" if name == "all" else "_requested_types_only"
             rec[f"f1{suffix}"] = f1
             rec[f"f1_type_agnostic{suffix}"] = f1_ta
             rec[f"counts_type_agnostic{suffix}"] = counts
+            rec[f"counts_exact{suffix}"] = counts_ex
         rec.update({"gt": gold, "pred_parsed": pred, "pred_raw": pred_raw})
         records.append(rec)
     return scorers, records
