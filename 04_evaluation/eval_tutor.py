@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import statistics
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -128,7 +129,9 @@ def main() -> None:
 
     for name, rows in data.items():
         prompts = [{"prompt_token_ids": tok(t, add_special_tokens=False)["input_ids"]} for t in texts[name]]
+        t0 = time.time()
         outs = llm.generate(prompts, params, lora_request=lora)
+        elapsed = time.time() - t0
         records = []
         for r, o in zip(rows, outs):
             gen = o.outputs[0]
@@ -145,12 +148,14 @@ def main() -> None:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         m = score(records) | {"run": args.run_name, "dataset": name, "model_id": args.model_id,
                               "adapter": args.adapter, "prompt": args.prompt, "seed": args.seed,
-                              "max_new_tokens": args.max_new_tokens,
+                              "max_new_tokens": args.max_new_tokens, "generation_seconds": elapsed,
+                              "output_tokens_per_second": sum(r["output_tokens"] for r in records) / elapsed,
                               "sampling": {"temperature": 0.6, "top_p": 0.95, "top_k": 20}}
         (out / "metrics.json").write_text(json.dumps(m, indent=2), encoding="utf-8")
         print(f"{args.run_name:<22} {name:<20} F1={m['F1']:.3f} (no MISC {m['without_MISC']['F1']:.3f}) "
               f"P={m['P']:.3f} R={m['R']:.3f} reasoning={m['mean_reasoning_tokens']:.0f} tok "
-              f"truncated={m['truncated']} status={m['status_counts']}", flush=True)
+              f"truncated={m['truncated']} status={m['status_counts']} "
+              f"[{elapsed / 60:.1f} min, {m['output_tokens_per_second']:.0f} tok/s]", flush=True)
 
 
 if __name__ == "__main__":

@@ -179,11 +179,12 @@ TUTOR_TRAIN_ARGS = ["--max-seq-length", "5120"]
 
 @app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=EVAL_TIMEOUT_S)
 def evaluate_tutor(run_name: str, prompt: str, adapter: str | None = None, limit: int | None = None,
-                   max_new_tokens: int = 12288) -> None:
+                   max_new_tokens: int = 12288, data: list[str] | None = None) -> None:
     """One model + prompt on the 5 CrossNER domains and the Pile-NER test split (one vLLM load)."""
     outputs.reload()
     cmd = ["python", "eval_tutor.py", "--model-id", TUTOR_MODEL, "--prompt", prompt, "--run-name", run_name,
-           "--output-dir", "/outputs/eval_tutor", "--max-new-tokens", str(max_new_tokens), "--data", *TUTOR_EVAL]
+           "--output-dir", "/outputs/eval_tutor", "--max-new-tokens", str(max_new_tokens),
+           "--data", *(data or TUTOR_EVAL)]
     cmd += ["--adapter", adapter] if adapter else []
     cmd += ["--limit", str(limit)] if limit else []
     _run(cmd, f"{CODE}/04_evaluation")
@@ -210,6 +211,14 @@ def tutor_smoke():
     that adapter (structured prompt)."""
     tutor_pipeline.remote(["structured"], ["--n-train-samples", "40", "--max-steps", "3", "--eval-steps", "3"],
                           5, "smoke")
+
+
+@app.local_entrypoint()
+def tutor_eval(run_name: str, prompt: str = "free", adapter: str = "", limit: int = 0, datasets: str = ""):
+    """One evaluation only, e.g. the base model (no --adapter) on part of the sets:
+    --run-name minirun_base_free --limit 50 --datasets crossner_ai"""
+    data = [f"tutor_eval/data/{d}.json" for d in datasets.split(",")] if datasets else None
+    evaluate_tutor.remote(run_name, prompt, adapter or None, limit or None, 12288, data)
 
 
 @app.local_entrypoint()
