@@ -24,6 +24,7 @@ package versions of the image, for reproducibility).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -32,6 +33,9 @@ import modal
 
 REPO = Path(__file__).resolve().parent.parent
 CODE = "/root/code"
+# per-container cap for evaluate_run: a stuck job is billed until it hits this.
+# Short evaluations (e.g. CrossNER) can lower it: EVAL_TIMEOUT_S=1800 modal run ...
+EVAL_TIMEOUT_S = int(os.environ.get("EVAL_TIMEOUT_S", 8 * 3600))
 GPU = "L40S"  # 48 GB, faster than an RTX 3090; ~2 $/h
 
 DATASETS = ["ncbi", "bc5cdr", "bc2gm", "bc4chemd", "AnatEM", "JNLPBA", "JNLPBA-Rare", "MedMentions-Rare", "biored"]
@@ -54,6 +58,12 @@ image = (
     .add_local_dir(REPO / "05_openvocab_sft", f"{CODE}/05_openvocab_sft",
                    ignore=["data", "work", "__pycache__", ".env"])
 )
+# training files of the free vs structured CoT experiment (build_tutor_cot_dataset.py; not in git,
+# derived from the tutors' private dataset): added only where they have been built
+for _v in ("free", "structured"):
+    _f = REPO / f"05_openvocab_sft/data/pilener_tutor_{_v}_cot.jsonl"
+    if _f.exists():
+        image = image.add_local_file(_f, f"{CODE}/tutor_data/{_v}.jsonl")
 hf_cache = modal.Volume.from_name("tesi-hf-cache", create_if_missing=True)
 outputs = modal.Volume.from_name("tesi-outputs", create_if_missing=True)
 VOLUMES = {"/cache": hf_cache, "/outputs": outputs}
@@ -93,7 +103,7 @@ def train(model_id: str, data_path: str, tag: str, hf_repo_id: str | None, extra
     return hf_repo_id or f"/outputs/work/{tag}/adapter"
 
 
-@app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=8 * 3600)
+@app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=EVAL_TIMEOUT_S)
 def evaluate_run(dataset: str, run_name: str, model_id: str, adapter: str | None = None,
                  max_new_tokens: int = 6144, limit: int | None = None, subset_repo: str | None = None,
                  extra: list[str] | None = None) -> dict:
@@ -156,6 +166,56 @@ def evaluate_grid(model_id: str, runs: list[tuple[str, str | None]], max_new_tok
         print(f"{r['run']:<28} {r['dataset']:<17} F1={r['F1']:.3f} P={r['P']:.2f} R={r['R']:.2f} "
               f"parse_errors={r['parse_errors']}")
     return results
+
+
+# --- free vs structured CoT experiment (tutors' dataset and evaluation protocol) ---
+TUTOR_MODEL = "Qwen/Qwen3-4B-Thinking-2507"
+TUTOR_EVAL = [f"tutor_eval/data/crossner_{d}.json" for d in ["ai", "literature", "music", "politics", "science"]] \
+    + ["tutor_eval/data/pilener_test.json"]
+# every training example is kept (longest rendered free example: 4,909 tokens), so that both
+# students see the same 3,822 queries; other hyperparameters are train_qwen.py's defaults
+TUTOR_TRAIN_ARGS = ["--max-seq-length", "5120"]
+
+
+@app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=EVAL_TIMEOUT_S)
+def evaluate_tutor(run_name: str, prompt: str, adapter: str | None = None, limit: int | None = None,
+                   max_new_tokens: int = 12288) -> None:
+    """One model + prompt on the 5 CrossNER domains and the Pile-NER test split (one vLLM load)."""
+    outputs.reload()
+    cmd = ["python", "eval_tutor.py", "--model-id", TUTOR_MODEL, "--prompt", prompt, "--run-name", run_name,
+           "--output-dir", "/outputs/eval_tutor", "--max-new-tokens", str(max_new_tokens), "--data", *TUTOR_EVAL]
+    cmd += ["--adapter", adapter] if adapter else []
+    cmd += ["--limit", str(limit)] if limit else []
+    _run(cmd, f"{CODE}/04_evaluation")
+
+
+@app.function(volumes=VOLUMES, timeout=24 * 3600)
+def tutor_pipeline(variants: list[str], train_extra: list[str], limit: int | None, prefix: str,
+                   eval_base: bool = True) -> None:
+    """Trains one adapter per CoT variant while the base model is evaluated with
+    both prompts, then evaluates each adapter with the prompt it was trained on."""
+    trainings = {v: train.spawn(TUTOR_MODEL, f"{CODE}/tutor_data/{v}.jsonl", f"{prefix}_{v}", None,
+                                TUTOR_TRAIN_ARGS + train_extra) for v in variants}
+    evals = [evaluate_tutor.spawn(f"{prefix}_base_{p}", p, None, limit) for p in variants] if eval_base else []
+    for v, call in trainings.items():
+        evals.append(evaluate_tutor.spawn(f"{prefix}_sft_{v}", v, call.get(), limit))
+    for call in evals:
+        call.get()
+
+
+@app.local_entrypoint()
+def tutor_smoke():
+    """End-to-end check of the experiment, about 1 $: 3 training steps on 40
+    structured examples, then 5 rows per eval set with the base model and
+    that adapter (structured prompt)."""
+    tutor_pipeline.remote(["structured"], ["--n-train-samples", "40", "--max-steps", "3", "--eval-steps", "3"],
+                          5, "smoke")
+
+
+@app.local_entrypoint()
+def tutor():
+    """The full experiment (run detached): free and structured students, base with both prompts."""
+    tutor_pipeline.remote(["free", "structured"], [], None, "qwen3-4b-thinking")
 
 
 @app.local_entrypoint()
