@@ -24,7 +24,8 @@ ENV_FILE="$REPO/05_openvocab_sft/.env"
 WORKDIR="$1"; shift
 
 # --ipc=host: vLLM and the PyTorch data loader need more shared memory than Docker's 64 MB default.
-# --user: outputs owned by the user, not root; that uid has no home in the image, hence HOME=/tmp.
+# Docker is rootless on the cluster nodes: root in the container is the user on the host, so the
+# outputs are already owned by the user (a --user uid would instead map to an unprivileged one).
 docker run \
     -v "$REPO":/workspace \
     -v "$LLM_CACHE_DIR":/llms \
@@ -32,8 +33,6 @@ docker run \
     -e HF_TOKEN="${HF_TOKEN:-}" \
     -e PYTHONUNBUFFERED=1 \
     -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
-    -e HOME=/tmp \
-    --user "$(id -u):$(id -g)" \
     --ipc=host \
     --rm \
     --memory="28g" \
