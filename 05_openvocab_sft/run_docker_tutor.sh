@@ -11,7 +11,9 @@
 # HF_TOKEN (read access to disi-unibo-nlp-students) from 05_openvocab_sft/.env,
 # or from 03_sft_training/.env if that one does not exist.
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# run from the repository root (sbatch_tutor.sh submits with --chdir): under SLURM, $0 is a copy
+# of this script in the spool directory, so the repository cannot be derived from it
+REPO="$(pwd)"
 LLM_CACHE_DIR="${HOME}/hf_cache"
 mkdir -p "$LLM_CACHE_DIR"
 
