@@ -205,8 +205,9 @@ def main() -> None:
         if args.grammar != "none":
             per_request = [params.clone() for _ in rows]
             for p, r in zip(per_request, rows):
-                p.guided_decoding = GuidedDecodingParams(grammar=grammar_for(args.grammar, r["requested_types"]),
-                                                         backend="xgrammar")
+                # the backend is vLLM's choice ("auto" picks xgrammar for EBNF grammars); vLLM 0.10
+                # refuses a backend set per request
+                p.guided_decoding = GuidedDecodingParams(grammar=grammar_for(args.grammar, r["requested_types"]))
         t0 = time.time()
         if args.think_budget_from:
             gens = budget_forced(llm, tok, prompts, rows, params, lora, think_end_id,
