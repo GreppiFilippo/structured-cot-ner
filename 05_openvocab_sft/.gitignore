@@ -3,3 +3,7 @@ __pycache__/
 *.jsonl
 .DS_Store
 work/
+
+.env
+slurm_logs/
+*.log
