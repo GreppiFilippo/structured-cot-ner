@@ -35,6 +35,26 @@ from src.metrics import _loads_or_none, exact_counts, f1_from_counts, iter_json_
 
 THINK_END = "</think>"
 
+# Grammar of the tutors' structured run (dataset card: thinking constrained to three one-line
+# fields, then the JSON answer constrained to a generic {type: [strings]} shape), in xgrammar's
+# EBNF. The generation prompt already ends with "<think>\n", so the output starts at TYPES.
+_FIELDS = 'root ::= "TYPES: " line "MENTIONS: " line "EDGE: " line "</think>\\n\\n" answer\n' \
+          'line ::= [^\\n]+ "\\n"\n'
+_JSON = ('list ::= "[" (str ("," str)*)? "]"\n'
+         'str ::= "\\"" ([^"\\\\\\n] | "\\\\" ["\\\\/bfnrt] | "\\\\u" hex hex hex hex)* "\\""\n'
+         'hex ::= [0-9a-fA-F]\n')
+
+
+def grammar_for(mode: str, requested: list[str]) -> str | None:
+    """none: free decoding; tutors: the tutors' grammar (any keys); keys: the same thinking
+    fields, with the answer's keys fixed to the requested types, in their order."""
+    if mode == "none":
+        return None
+    if mode == "tutors":
+        return _FIELDS + 'answer ::= "{" (pair ("," pair)*)? "}"\npair ::= str ":" list\n' + _JSON
+    keys = ' "," '.join(f'"\\"{t}\\":" list' for t in requested)
+    return _FIELDS + f'answer ::= "{{" {keys} "}}"\n' + _JSON
+
 
 def parse_answer(text: str, requested: list[str]) -> tuple[dict, str]:
     """(prediction restricted to the requested types, status)."""
@@ -87,6 +107,46 @@ def score(records: list[dict]) -> dict:
     }
 
 
+def budget_forced(llm, tok, prompts, rows, params, lora, think_end_id, budget_file):
+    """Two passes (budget forcing, as in s1): the reasoning is generated up to the query's
+    budget; if it has not closed by then, "\n</think>\n\n" is appended and the answer is
+    generated from there. Returns (token ids, text, finish reason, forced) per query."""
+    budget = {json.loads(l)["id"]: json.loads(l)["reasoning_tokens"]
+              for l in budget_file.read_text(encoding="utf-8").splitlines() if l.strip()}
+    first = []
+    for r in rows:
+        p = params.clone()
+        p.max_tokens = max(1, budget[r["id"]])
+        first.append(p)
+    outs = llm.generate(prompts, first, lora_request=lora)
+    close = tok("\n</think>\n\n", add_special_tokens=False)["input_ids"]
+    result, todo = [None] * len(rows), []
+    for i, o in enumerate(outs):
+        g = o.outputs[0]
+        ids = list(g.token_ids)
+        if think_end_id in ids or g.finish_reason != "length":
+            # closed within budget: a reply already started after </think> is finished like the rest
+            if think_end_id in ids and g.finish_reason == "length":
+                todo.append((i, ids, False))
+            else:
+                result[i] = (ids, g.text, g.finish_reason, False)
+        else:
+            todo.append((i, ids + close, True))
+    if todo:
+        second = []
+        for i, ids, _ in todo:
+            p = params.clone()
+            p.max_tokens = max(1, params.max_tokens - len(ids))
+            second.append(p)
+        outs2 = llm.generate([{"prompt_token_ids": prompts[i]["prompt_token_ids"] + ids} for i, ids, _ in todo],
+                             second, lora_request=lora)
+        for (i, ids, forced), o in zip(todo, outs2):
+            g = o.outputs[0]
+            full = ids + list(g.token_ids)
+            result[i] = (full, tok.decode(full, skip_special_tokens=False), g.finish_reason, forced)
+    return result
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model-id", default="Qwen/Qwen3-4B-Thinking-2507")
@@ -100,12 +160,19 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None, help="First N rows of each file (smoke tests)")
     # on a 24 GB RTX 3090, 0.9 / 256 sequences ran out of memory in the top-k/top-p sampler, which
     # sorts the full-vocabulary logits of every running sequence outside vLLM's reserved memory
+    ap.add_argument("--grammar", choices=["none", "tutors", "keys"], default="none",
+                    help="Constrained decoding (see grammar_for); default: free decoding")
+    ap.add_argument("--think-budget-from", default=None, metavar="RUN",
+                    help="Budget forcing: cap each query's reasoning at the tokens run RUN (same --output-dir) "
+                         "used on it; a reasoning still open there is closed with </think> and the answer "
+                         "is generated after it")
     ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     ap.add_argument("--max-num-seqs", type=int, default=128)
     args = ap.parse_args()
 
     import transformers
     from vllm import LLM, SamplingParams
+    from vllm.sampling_params import GuidedDecodingParams
 
     tok = transformers.AutoTokenizer.from_pretrained(args.model_id)
     think_end_id = tok.convert_tokens_to_ids(THINK_END)
@@ -134,25 +201,38 @@ def main() -> None:
 
     for name, rows in data.items():
         prompts = [{"prompt_token_ids": tok(t, add_special_tokens=False)["input_ids"]} for t in texts[name]]
+        per_request = params
+        if args.grammar != "none":
+            per_request = [params.clone() for _ in rows]
+            for p, r in zip(per_request, rows):
+                p.guided_decoding = GuidedDecodingParams(grammar=grammar_for(args.grammar, r["requested_types"]),
+                                                         backend="xgrammar")
         t0 = time.time()
-        outs = llm.generate(prompts, params, lora_request=lora)
+        if args.think_budget_from:
+            gens = budget_forced(llm, tok, prompts, rows, params, lora, think_end_id,
+                                 Path(args.output_dir) / name / args.think_budget_from / "predictions.jsonl")
+        else:
+            gens = [(list(o.outputs[0].token_ids), o.outputs[0].text, o.outputs[0].finish_reason, False)
+                    for o in llm.generate(prompts, per_request, lora_request=lora)]
         elapsed = time.time() - t0
         records = []
-        for r, o in zip(rows, outs):
-            gen = o.outputs[0]
-            ids = list(gen.token_ids)
+        for r, (ids, text, finish, forced) in zip(rows, gens):
             n_reason = ids.index(think_end_id) if think_end_id in ids else len(ids)
-            pred, status = parse_answer(gen.text, r["requested_types"])
+            pred, status = parse_answer(text, r["requested_types"])
             records.append({"id": r["id"], "requested_types": r["requested_types"], "distractors": r["distractors"],
-                            "gold": r["gold"], "pred": pred, "status": status, "finish_reason": gen.finish_reason,
-                            "reasoning_tokens": n_reason, "output_tokens": len(ids), "raw": gen.text})
+                            "gold": r["gold"], "pred": pred, "status": status, "finish_reason": finish,
+                            "reasoning_tokens": n_reason, "output_tokens": len(ids), "budget_forced": forced,
+                            "raw": text})
         out = Path(args.output_dir) / name / args.run_name
         out.mkdir(parents=True, exist_ok=True)
         with open(out / "predictions.jsonl", "w", encoding="utf-8") as f:
             for rec in records:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         m = score(records) | {"run": args.run_name, "dataset": name, "model_id": args.model_id,
-                              "adapter": args.adapter, "prompt": args.prompt, "seed": args.seed,
+                              "adapter": args.adapter, "prompt": args.prompt, "grammar": args.grammar,
+                              "think_budget_from": args.think_budget_from,
+                              "budget_forced": sum(r["budget_forced"] for r in records),
+                              "seed": args.seed,
                               "max_new_tokens": args.max_new_tokens, "generation_seconds": elapsed,
                               "output_tokens_per_second": sum(r["output_tokens"] for r in records) / elapsed,
                               "sampling": {"temperature": 0.6, "top_p": 0.95, "top_k": 20}}
