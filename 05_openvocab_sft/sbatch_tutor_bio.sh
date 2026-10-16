@@ -8,11 +8,13 @@
 # Jobs, chained so that they run in this order on the node's one GPU (each
 # starts when the previous one ends, even if it failed):
 #   1. prepare the 9 sets (skipped if they already exist)
-#   2. structured student, structured prompt
-#   3. free student, free prompt
-#   4. base model, free prompt
-#   5. base model, structured prompt, on the first 50 sentences of each set
-#      (enough to document whether it answers in the requested format)
+#   2. structured student, structured prompt   (all 9 sets)
+#   3. free student, free prompt               (all 9 sets)
+#   4. base model, free prompt                 (BASE_SETS)
+#   5. base model, structured prompt           (BASE_SETS)
+# BASE_SETS (default: bc5cdr JNLPBA biored, three sub-domains with several labels,
+# so that every query has real distractors) limits the base model, whose
+# reasoning is ~10x longer, to the sets the tutors asked for (at least three).
 #
 # From the repository root:  ./05_openvocab_sft/sbatch_tutor_bio.sh
 
@@ -28,6 +30,8 @@ P="qwen3-4b-thinking"
 OUT="outputs_tutor_bio"
 SETS=(ncbi bc5cdr bc2gm bc4chemd AnatEM JNLPBA JNLPBA-Rare MedMentions-Rare biored)
 DATA=("${SETS[@]/#/tutor_eval/data_bio/}"); DATA=("${DATA[@]/%/.json}")
+read -r -a BSETS <<< "${BASE_SETS:-bc5cdr JNLPBA biored}"
+BDATA=("${BSETS[@]/#/tutor_eval/data_bio/}"); BDATA=("${BDATA[@]/%/.json}")
 
 submit() {  # submit <label> <previous job or ""> <command...>
     local label="$1" prev="$2"; shift 2
@@ -36,7 +40,7 @@ submit() {  # submit <label> <previous job or ""> <command...>
         --output="$LOG_DIR/bio_${label}_%j.out" --error="$LOG_DIR/bio_${label}_%j.err" "$RUN" "$@"
 }
 
-prev=""
+prev="${AFTER:-}"
 missing=0
 for f in "${DATA[@]}"; do [ -f "$REPO/04_evaluation/$f" ] || missing=1; done
 if [ "$missing" = 1 ]; then
@@ -46,17 +50,16 @@ else
     echo "prepare: sets already built, skipped"
 fi
 
-evaluate() {  # evaluate <run name> <prompt> [extra eval_tutor.py flags...]
-    local name="$1" prompt="$2"; shift 2
+evaluate() {  # evaluate <run name> <prompt> <data var> [extra eval_tutor.py flags...]
+    local name="$1" prompt="$2"; local -n sets="$3"; shift 3
     prev=$(submit "eval_${name}" "$prev" 04_evaluation python3 eval_tutor.py --model-id "$MODEL" \
-        --prompt "$prompt" --run-name "$name" --output-dir "$OUT" --data "${DATA[@]}" "$@")
-    echo "$name ($prompt prompt): job $prev"
+        --prompt "$prompt" --run-name "$name" --output-dir "$OUT" --data "${sets[@]}" "$@")
+    echo "$name ($prompt prompt, ${#sets[@]} sets): job $prev"
 }
 
-evaluate "${P}_sft_structured" structured --adapter "/workspace/05_openvocab_sft/work/${P}_structured/adapter"
-evaluate "${P}_sft_free" free --adapter "/workspace/05_openvocab_sft/work/${P}_free/adapter"
-evaluate "${P}_base_free" free
-evaluate "${P}_base_structured_sample" structured --limit 50
+evaluate "${P}_sft_structured" structured DATA --adapter "/workspace/05_openvocab_sft/work/${P}_structured/adapter"
+evaluate "${P}_sft_free" free DATA --adapter "/workspace/05_openvocab_sft/work/${P}_free/adapter"
+evaluate "${P}_base_free" free BDATA
+evaluate "${P}_base_structured" structured BDATA
 
-echo ""
-echo "Submitted to $NODE, one after the other. Monitor with: squeue -u \$USER"
+echo "last job: $prev"

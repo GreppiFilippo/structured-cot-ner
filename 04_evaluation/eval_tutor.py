@@ -161,6 +161,9 @@ def main() -> None:
     ap.add_argument("--max-new-tokens", type=int, default=12288, help="Default: the teacher's free-run budget")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int, default=None, help="First N rows of each file (smoke tests)")
+    ap.add_argument("--start", type=int, default=0,
+                    help="Skip the first N rows of each file (to complete a run done on the first N; "
+                         "see merge_runs.py)")
     # on a 24 GB RTX 3090, 0.9 / 256 sequences ran out of memory in the top-k/top-p sampler, which
     # sorts the full-vocabulary logits of every running sequence outside vLLM's reserved memory
     ap.add_argument("--grammar", choices=["none", "tutors", "keys"], default="none",
@@ -191,7 +194,8 @@ def main() -> None:
     if not todo:
         print(f"{args.run_name}: every dataset already evaluated")
         return
-    data = {Path(f).stem: json.loads(Path(f).read_text(encoding="utf-8"))[: args.limit] for f in todo}
+    end = args.start + args.limit if args.limit else None
+    data = {Path(f).stem: json.loads(Path(f).read_text(encoding="utf-8"))[args.start:end] for f in todo}
     texts = {name: [tok.apply_chat_template([{"role": "user", "content": r[f"{args.prompt}_prompt"]}],
                                             add_generation_prompt=True, tokenize=False) for r in rows]
              for name, rows in data.items()}
