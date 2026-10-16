@@ -98,6 +98,10 @@ def main() -> None:
     ap.add_argument("--max-new-tokens", type=int, default=12288, help="Default: the teacher's free-run budget")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int, default=None, help="First N rows of each file (smoke tests)")
+    # on a 24 GB RTX 3090, 0.9 / 256 sequences ran out of memory in the top-k/top-p sampler, which
+    # sorts the full-vocabulary logits of every running sequence outside vLLM's reserved memory
+    ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    ap.add_argument("--max-num-seqs", type=int, default=128)
     args = ap.parse_args()
 
     import transformers
@@ -123,7 +127,8 @@ def main() -> None:
              for name, rows in data.items()}
     longest = max(len(tok(t, add_special_tokens=False)["input_ids"]) for ts in texts.values() for t in ts)
     llm = LLM(model=args.model_id, dtype="bfloat16", seed=args.seed, enable_lora=bool(lora), max_lora_rank=16,
-              max_model_len=longest + args.max_new_tokens, gpu_memory_utilization=0.9)
+              max_model_len=longest + args.max_new_tokens, gpu_memory_utilization=args.gpu_memory_utilization,
+              max_num_seqs=args.max_num_seqs)
     params = SamplingParams(max_tokens=args.max_new_tokens, temperature=0.6, top_p=0.95, top_k=20,
                             seed=args.seed, skip_special_tokens=False)
 
