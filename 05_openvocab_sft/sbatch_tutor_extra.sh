@@ -7,7 +7,8 @@
 #       one-line fields, then a generic {type: [strings]} JSON)
 #   E2  structured student, same fields, answer keys fixed to the requested types
 #   E3  base model, structured prompt, tutors' grammar (no training: the
-#       inference-only method the structured format comes from)
+#       inference-only method the structured format comes from); E3b the same
+#       with the answer keys fixed
 #   E4  free student with each query's reasoning capped at the tokens the
 #       structured student used on it (budget forcing)
 #   E5  both students again with seed 1, CrossNER only (seed variance)
@@ -53,6 +54,7 @@ submit() {  # submit <run name> <prompt> <data...> -- [extra eval_tutor.py flags
 submit "${P}_sft_structured_grammar" structured "${ALL[@]}" -- --adapter "$A_STRUCT" --grammar tutors
 submit "${P}_sft_structured_grammar_keys" structured "${ALL[@]}" -- --adapter "$A_STRUCT" --grammar keys
 submit "${P}_base_structured_grammar" structured "${ALL[@]}" -- --grammar tutors
+submit "${P}_base_structured_grammar_keys" structured "${ALL[@]}" -- --grammar keys
 submit "${P}_sft_free_budget_structured" free "${ALL[@]}" -- --adapter "$A_FREE" \
     --think-budget-from "${P}_sft_structured"
 if [ -z "$SMOKE" ]; then

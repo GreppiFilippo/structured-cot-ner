@@ -8,6 +8,7 @@
 # Args: <workdir relative to the repo root> <command...>
 # e.g. run_docker_tutor.sh 04_evaluation python3 eval_tutor.py --prompt free ...
 #
+# TUTOR_IMAGE selects another image (e.g. tutor-baselines-image for eval_baselines.py).
 # HF_TOKEN (read access to disi-unibo-nlp-students) from 05_openvocab_sft/.env,
 # or from 03_sft_training/.env if that one does not exist.
 
@@ -38,5 +39,5 @@ docker run \
     --memory="28g" \
     --gpus '"device='"$CUDA_VISIBLE_DEVICES"'"' \
     -w "/workspace/$WORKDIR" \
-    tutor-cot-image \
+    "${TUTOR_IMAGE:-tutor-cot-image}" \
     "$@"

@@ -40,9 +40,12 @@ THINK_END = "</think>"
 # EBNF. The generation prompt already ends with "<think>\n", so the output starts at TYPES.
 _FIELDS = 'root ::= "TYPES: " line "MENTIONS: " line "EDGE: " line "</think>\\n\\n" answer\n' \
           'line ::= [^\\n]+ "\\n"\n'
-_JSON = ('list ::= "[" (str ("," str)*)? "]"\n'
+# JSON whitespace is allowed, as in vLLM's JSON-constrained decoding, but bounded: with none
+# allowed, the base model (which writes indented JSON) was pushed into degenerate answers
+_JSON = ('list ::= "[" ws (str (ws "," ws str)*)? ws "]"\n'
          'str ::= "\\"" ([^"\\\\\\n] | "\\\\" ["\\\\/bfnrt] | "\\\\u" hex hex hex hex)* "\\""\n'
-         'hex ::= [0-9a-fA-F]\n')
+         'hex ::= [0-9a-fA-F]\n'
+         'ws ::= [ \\t\\n]{0,16}\n')
 
 
 def grammar_for(mode: str, requested: list[str]) -> str | None:
@@ -51,9 +54,9 @@ def grammar_for(mode: str, requested: list[str]) -> str | None:
     if mode == "none":
         return None
     if mode == "tutors":
-        return _FIELDS + 'answer ::= "{" (pair ("," pair)*)? "}"\npair ::= str ":" list\n' + _JSON
-    keys = ' "," '.join(f'"\\"{t}\\":" list' for t in requested)
-    return _FIELDS + f'answer ::= "{{" {keys} "}}"\n' + _JSON
+        return _FIELDS + 'answer ::= "{" ws (pair (ws "," ws pair)*)? ws "}"\npair ::= str ws ":" ws list\n' + _JSON
+    keys = ' ws "," ws '.join(f'"\\"{t}\\"" ws ":" ws list' for t in requested)
+    return _FIELDS + f'answer ::= "{{" ws {keys} ws "}}"\n' + _JSON
 
 
 def parse_answer(text: str, requested: list[str]) -> tuple[dict, str]:
