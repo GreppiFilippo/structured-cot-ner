@@ -54,7 +54,10 @@ def render(tokenizer, messages):
     prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     full_ids = tokenizer(full.rstrip("\n"), add_special_tokens=False)["input_ids"]
     if full_ids[: len(prompt_ids)] != prompt_ids:
-        raise ValueError("tokenization of the prompt differs inside the full example")
+        # The text is a prefix but a token straddles the boundary (e.g. an empty thinking
+        # block, "<think>\n" + "\n</think>", merges the two newlines). Tokenize the target
+        # on its own, as it is generated at inference time after the prompt tokens.
+        full_ids = prompt_ids + tokenizer(full.rstrip("\n")[len(prompt):], add_special_tokens=False)["input_ids"]
     labels = [-100] * len(prompt_ids) + full_ids[len(prompt_ids):]
     return full_ids, labels
 

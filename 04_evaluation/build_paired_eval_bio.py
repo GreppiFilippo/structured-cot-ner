@@ -1,6 +1,6 @@
 """Builds the biomedical evaluation sets of the free vs structured CoT
 experiment, with the same query protocol as the CrossNER ones
-(build_tutor_eval.py), kept in their own folder (tutor_eval/data_bio/).
+(build_paired_eval.py), kept in their own folder (paired_eval/data_bio/).
 
 - Sentences: the same 500 test sentences per dataset as the earlier
   evaluations (build_eval_subset.py: same splits, indices drawn with
@@ -12,14 +12,14 @@ experiment, with the same query protocol as the CrossNER ones
   another dataset is not annotated here (NCBI marks diseases only), so a
   correct mention of it would be scored as a false positive. Single-label
   datasets therefore get a distractor only when the sentence has no entity.
-- Type names in the tutors' UPPER_SNAKE style (GeneOrGeneProduct ->
+- Type names in the UPPER_SNAKE style of the paired-trace dataset (GeneOrGeneProduct ->
   GENE_OR_GENE_PRODUCT, Body Substance -> BODY_SUBSTANCE).
 - Text and gold mentions detokenized with Moses, as for CrossNER, so that
   every gold mention is a substring of the text (the earlier subsets joined
   span tokens with spaces, e.g. "IL - 2", which exact match cannot hit).
 
 Usage:
-    python3 build_tutor_eval_bio.py --out-dir tutor_eval/data_bio
+    python3 build_paired_eval_bio.py --out-dir paired_eval/data_bio
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ import numpy as np
 import sacremoses
 
 from build_eval_subset import BIONER_DATASETS, RANDOM_SEED
-from build_tutor_eval import SEED, prompts, spans
+from build_paired_eval import SEED, prompts, spans
 
 N_PER_DATASET = 500
 CHECK_REPO = "filippogreppi/bioner-eval-subset"
@@ -87,7 +87,7 @@ def build(ds_id: str, detok, rng: random.Random) -> tuple[list[dict], dict]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out-dir", default="tutor_eval/data_bio")
+    ap.add_argument("--out-dir", default="paired_eval/data_bio")
     ap.add_argument("--seed", type=int, default=SEED)
     args = ap.parse_args()
     out = Path(args.out_dir)

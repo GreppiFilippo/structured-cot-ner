@@ -21,7 +21,7 @@ RUN apt-get update -y && \
 RUN pip install --upgrade pip
 RUN pip install wrapt --upgrade --ignore-installed
 
-# torch==2.6.0 is both the tutors' recommended version for this cluster's
+# torch==2.6.0 is both the lab's recommended version for this cluster's
 # drivers AND vllm==0.8.5's own exact pin (verified in its package
 # metadata) — installed explicitly with the +cu124 build (CUDA 12.4, safely
 # under the 12.5 ceiling confirmed via nvidia-smi) so the later general

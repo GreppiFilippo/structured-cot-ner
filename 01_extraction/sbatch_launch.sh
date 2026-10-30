@@ -11,8 +11,7 @@
 # That writes outputs/subset_1.txt ... subset_N.txt. This script then
 # submits one job per subset file found.
 #
-# Also splits across faretra's other GPUs — a tutor pointed out that
-# occupying a single GPU for ~10 days straight isn't acceptable on this
+# Also splits across faretra's other GPUs — occupying a single GPU for ~10 days straight is not acceptable on this
 # shared cluster. SLURM assigns each job whichever GPU is free on faretra
 # when it starts, no need to pin GPU indices manually.
 #

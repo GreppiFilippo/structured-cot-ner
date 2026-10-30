@@ -58,12 +58,15 @@ image = (
     .add_local_dir(REPO / "05_openvocab_sft", f"{CODE}/05_openvocab_sft",
                    ignore=["data", "work", "__pycache__", ".env"])
 )
-# training files of the free vs structured CoT experiment (build_tutor_cot_dataset.py; not in git,
-# derived from the tutors' private dataset): added only where they have been built
-for _v in ("free", "structured"):
-    _f = REPO / f"05_openvocab_sft/data/pilener_tutor_{_v}_cot.jsonl"
-    if _f.exists():
-        image = image.add_local_file(_f, f"{CODE}/tutor_data/{_v}.jsonl")
+# training files of the free vs structured CoT experiment (build_paired_cot_dataset.py; not in git,
+# derived from the private paired-trace dataset): added only where they have been built
+# (and their MedGemma versions, make_medgemma_paired_data.py, and the structure without EDGE,
+# make_noedge_data.py)
+for _v in ("free", "structured", "noedge"):
+    for _src, _dst in ((f"{_v}_cot", _v), (f"{_v}_cot_medgemma", f"{_v}_medgemma")):
+        _f = REPO / f"05_openvocab_sft/data/pilener_paired_{_src}.jsonl"
+        if _f.exists():
+            image = image.add_local_file(_f, f"{CODE}/paired_data/{_dst}.jsonl")
 hf_cache = modal.Volume.from_name("tesi-hf-cache", create_if_missing=True)
 outputs = modal.Volume.from_name("tesi-outputs", create_if_missing=True)
 VOLUMES = {"/cache": hf_cache, "/outputs": outputs}
@@ -168,63 +171,222 @@ def evaluate_grid(model_id: str, runs: list[tuple[str, str | None]], max_new_tok
     return results
 
 
-# --- free vs structured CoT experiment (tutors' dataset and evaluation protocol) ---
-TUTOR_MODEL = "Qwen/Qwen3-4B-Thinking-2507"
-TUTOR_EVAL = [f"tutor_eval/data/crossner_{d}.json" for d in ["ai", "literature", "music", "politics", "science"]] \
-    + ["tutor_eval/data/pilener_test.json"]
+# --- free vs structured CoT experiment (paired-trace dataset and its evaluation protocol) ---
+PAIRED_MODEL = "Qwen/Qwen3-4B-Thinking-2507"
+PAIRED_EVAL = [f"paired_eval/data/crossner_{d}.json" for d in ["ai", "literature", "music", "politics", "science"]] \
+    + ["paired_eval/data/pilener_test.json"]
 # every training example is kept (longest rendered free example: 4,909 tokens), so that both
 # students see the same 3,822 queries; other hyperparameters are train_qwen.py's defaults
-TUTOR_TRAIN_ARGS = ["--max-seq-length", "5120"]
+PAIRED_TRAIN_ARGS = ["--max-seq-length", "5120"]
 
 
 @app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=EVAL_TIMEOUT_S)
-def evaluate_tutor(run_name: str, prompt: str, adapter: str | None = None, limit: int | None = None,
+def evaluate_paired(run_name: str, prompt: str, adapter: str | None = None, limit: int | None = None,
                    max_new_tokens: int = 12288, data: list[str] | None = None) -> None:
     """One model + prompt on the 5 CrossNER domains and the Pile-NER test split (one vLLM load)."""
     outputs.reload()
-    cmd = ["python", "eval_tutor.py", "--model-id", TUTOR_MODEL, "--prompt", prompt, "--run-name", run_name,
-           "--output-dir", "/outputs/eval_tutor", "--max-new-tokens", str(max_new_tokens),
-           "--data", *(data or TUTOR_EVAL)]
+    cmd = ["python", "eval_paired.py", "--model-id", PAIRED_MODEL, "--prompt", prompt, "--run-name", run_name,
+           "--output-dir", "/outputs/eval_paired", "--max-new-tokens", str(max_new_tokens),
+           "--data", *(data or PAIRED_EVAL)]
     cmd += ["--adapter", adapter] if adapter else []
     cmd += ["--limit", str(limit)] if limit else []
     _run(cmd, f"{CODE}/04_evaluation")
 
 
 @app.function(volumes=VOLUMES, timeout=24 * 3600)
-def tutor_pipeline(variants: list[str], train_extra: list[str], limit: int | None, prefix: str,
+def paired_pipeline(variants: list[str], train_extra: list[str], limit: int | None, prefix: str,
                    eval_base: bool = True) -> None:
     """Trains one adapter per CoT variant while the base model is evaluated with
     both prompts, then evaluates each adapter with the prompt it was trained on."""
-    trainings = {v: train.spawn(TUTOR_MODEL, f"{CODE}/tutor_data/{v}.jsonl", f"{prefix}_{v}", None,
-                                TUTOR_TRAIN_ARGS + train_extra) for v in variants}
-    evals = [evaluate_tutor.spawn(f"{prefix}_base_{p}", p, None, limit) for p in variants] if eval_base else []
+    trainings = {v: train.spawn(PAIRED_MODEL, f"{CODE}/paired_data/{v}.jsonl", f"{prefix}_{v}", None,
+                                PAIRED_TRAIN_ARGS + train_extra) for v in variants}
+    evals = [evaluate_paired.spawn(f"{prefix}_base_{p}", p, None, limit) for p in variants] if eval_base else []
     for v, call in trainings.items():
-        evals.append(evaluate_tutor.spawn(f"{prefix}_sft_{v}", v, call.get(), limit))
+        evals.append(evaluate_paired.spawn(f"{prefix}_sft_{v}", v, call.get(), limit))
     for call in evals:
         call.get()
 
 
 @app.local_entrypoint()
-def tutor_smoke():
+def paired_smoke():
     """End-to-end check of the experiment, about 1 $: 3 training steps on 40
     structured examples, then 5 rows per eval set with the base model and
     that adapter (structured prompt)."""
-    tutor_pipeline.remote(["structured"], ["--n-train-samples", "40", "--max-steps", "3", "--eval-steps", "3"],
+    paired_pipeline.remote(["structured"], ["--n-train-samples", "40", "--max-steps", "3", "--eval-steps", "3"],
                           5, "smoke")
 
 
 @app.local_entrypoint()
-def tutor_eval(run_name: str, prompt: str = "free", adapter: str = "", limit: int = 0, datasets: str = ""):
+def paired_eval(run_name: str, prompt: str = "free", adapter: str = "", limit: int = 0, datasets: str = ""):
     """One evaluation only, e.g. the base model (no --adapter) on part of the sets:
     --run-name minirun_base_free --limit 50 --datasets crossner_ai"""
-    data = [f"tutor_eval/data/{d}.json" for d in datasets.split(",")] if datasets else None
-    evaluate_tutor.remote(run_name, prompt, adapter or None, limit or None, 12288, data)
+    data = [f"paired_eval/data/{d}.json" for d in datasets.split(",")] if datasets else None
+    evaluate_paired.remote(run_name, prompt, adapter or None, limit or None, 12288, data)
 
 
 @app.local_entrypoint()
-def tutor():
+def paired():
     """The full experiment (run detached): free and structured students, base with both prompts."""
-    tutor_pipeline.remote(["free", "structured"], [], None, "qwen3-4b-thinking")
+    paired_pipeline.remote(["free", "structured"], [], None, "qwen3-4b-thinking")
+
+
+# Same experiment on a student of another family. SmolLM3-3B reasons in a <think>
+# block that the model opens itself (its template does not add it to the generation
+# prompt), so the training files of the Qwen students are used unchanged.
+SMOL_MODEL = "HuggingFaceTB/SmolLM3-3B"
+PAIRED_BIO = [f"paired_eval/data_bio/{d}.json" for d in DATASETS]
+
+
+@app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=EVAL_TIMEOUT_S)
+def evaluate_family(model_id: str, run_name: str, prompt: str, adapter: str | None, limit: int | None,
+                    data: list[str], output_dir: str) -> None:
+    """One model + prompt on a list of evaluation sets (one vLLM load)."""
+    outputs.reload()
+    cmd = ["python", "eval_paired.py", "--model-id", model_id, "--prompt", prompt, "--run-name", run_name,
+           "--output-dir", output_dir, "--max-new-tokens", "12288", "--data", *data]
+    cmd += ["--adapter", adapter] if adapter else []
+    cmd += ["--limit", str(limit)] if limit else []
+    _run(cmd, f"{CODE}/04_evaluation")
+
+
+@app.function(volumes=VOLUMES, timeout=24 * 3600)
+def family_pipeline(model_id: str, prefix: str, train_extra: list[str], limit: int | None,
+                    data_suffix: str = "", eval_base: bool = False,
+                    variants: tuple[str, ...] = ("free", "structured")) -> None:
+    """Trains a student of model_id per CoT variant (by default free and structured) in
+    parallel, then evaluates each with its own prompt on CrossNER, on the Pile-NER test
+    split and on the nine biomedical sets, in three separate containers (a stopped
+    container loses only its own group). eval_base also evaluates the base model with
+    the free prompt, while the students train."""
+    trainings = {v: train.spawn(model_id, f"{CODE}/paired_data/{v}{data_suffix}.jsonl", f"{prefix}_{v}", None,
+                                PAIRED_TRAIN_ARGS + train_extra) for v in variants}
+    groups = [(PAIRED_EVAL[:5], "/outputs/eval_paired"), (PAIRED_EVAL[5:], "/outputs/eval_paired"),
+              (PAIRED_BIO, "/outputs/eval_paired_bio")]
+    evals = [evaluate_family.spawn(model_id, f"{prefix}_base_free", "free", None, limit, data, out)
+             for data, out in groups] if eval_base else []
+    for v, call in trainings.items():
+        adapter = call.get()
+        evals += [evaluate_family.spawn(model_id, f"{prefix}_sft_{v}", v, adapter, limit, data, out)
+                  for data, out in groups]
+    for call in evals:
+        call.get()
+
+
+@app.local_entrypoint()
+def noedge_smoke():
+    """End-to-end check of the structure without EDGE: 3 training steps, 5 rows per eval set."""
+    family_pipeline.remote(PAIRED_MODEL, "smoke_qwen3-4b-thinking",
+                           ["--n-train-samples", "40", "--max-steps", "3", "--eval-steps", "3"], 5,
+                           variants=("noedge",))
+
+
+@app.local_entrypoint()
+def noedge():
+    """Qwen3-4B-Thinking-2507 student on the structured traces without EDGE (run detached)."""
+    family_pipeline.remote(PAIRED_MODEL, "qwen3-4b-thinking", [], None, variants=("noedge",))
+
+
+@app.function(volumes=VOLUMES, timeout=24 * 3600)
+def evaluate_trained(model_id: str, run_name: str, prompt: str, adapter: str) -> None:
+    """The three evaluation groups of family_pipeline for an adapter already on the volume."""
+    groups = [(PAIRED_EVAL[:5], "/outputs/eval_paired"), (PAIRED_EVAL[5:], "/outputs/eval_paired"),
+              (PAIRED_BIO, "/outputs/eval_paired_bio")]
+    for call in [evaluate_family.spawn(model_id, run_name, prompt, adapter, None, data, out)
+                 for data, out in groups]:
+        call.get()
+
+
+@app.local_entrypoint()
+def noedge_eval():
+    """Evaluations of the no-EDGE student whose adapter is already trained (run detached,
+    keeping the client attached: a client stopped early cancels the remote call)."""
+    evaluate_trained.remote(PAIRED_MODEL, "qwen3-4b-thinking_sft_noedge", "noedge",
+                            "/outputs/work/qwen3-4b-thinking_noedge/adapter")
+
+
+@app.local_entrypoint()
+def smol_smoke():
+    """End-to-end check with SmolLM3-3B: 3 training steps per variant, 5 rows per eval set."""
+    family_pipeline.remote(SMOL_MODEL, "smoke_smollm3",
+                           ["--n-train-samples", "40", "--max-steps", "3", "--eval-steps", "3"], 5)
+
+
+@app.local_entrypoint()
+def smol():
+    """Free and structured SmolLM3-3B students (run detached)."""
+    family_pipeline.remote(SMOL_MODEL, "smollm3-3b", [], None)
+
+
+# MedGemma-1.5-4B, the medical student of the first phase: same queries, prompts,
+# reasoning and answers, written in its own thought block (make_medgemma_paired_data.py);
+# eval_paired.py reads that block (--thought-format auto).
+MEDGEMMA_MODEL = "google/medgemma-1.5-4b-it"
+
+
+@app.function(volumes=VOLUMES, timeout=24 * 3600)
+def catch_up_pipeline() -> None:
+    """Evaluations queued on the cluster, moved here for speed (adapters uploaded to
+    /outputs/work/<tag>/adapter with `modal volume put`): the biomedical sets for the
+    follow-up Qwen3-4B-Thinking-2507 students, and the Pile-NER test split for the
+    SmolLM3 students. One container per evaluation, all in parallel; datasets already
+    evaluated are skipped by eval_paired.py."""
+    jobs = [(PAIRED_MODEL, f"qwen3-4b-thinking_sft_{t}", "structured" if t.startswith("structured") else "free",
+             f"/outputs/work/qwen3-4b-thinking_{t}/adapter", None, PAIRED_BIO, "/outputs/eval_paired_bio")
+            for t in ["free", "structured", "noreason", "freetrunc", "free_seed1", "structured_seed1",
+                      "free_seed2", "structured_seed2"]]
+    jobs += [(SMOL_MODEL, f"smollm3-3b_sft_{v}", v, f"/outputs/work/smollm3-3b_{v}/adapter", None,
+              PAIRED_EVAL[5:], "/outputs/eval_paired") for v in ("free", "structured")]
+    list(evaluate_family.starmap(jobs))
+
+
+@app.function(volumes=VOLUMES, timeout=24 * 3600)
+def base_pipeline(model_id: str, run_name: str, bio_sets: list[str] | None = None) -> None:
+    """A base model with the free prompt on CrossNER, on the Pile-NER test split and on the
+    biomedical sets (all nine, or bio_sets), one container per group, in parallel."""
+    bio = [f"paired_eval/data_bio/{d}.json" for d in bio_sets] if bio_sets else PAIRED_BIO
+    groups = [(bio, "/outputs/eval_paired_bio")] if bio_sets else \
+        [(PAIRED_EVAL[:5], "/outputs/eval_paired"), (PAIRED_EVAL[5:], "/outputs/eval_paired"), (bio, "/outputs/eval_paired_bio")]
+    list(evaluate_family.starmap([(model_id, run_name, "free", None, None, data, out) for data, out in groups]))
+
+
+@app.local_entrypoint()
+def smol_base():
+    """Base SmolLM3-3B with the free prompt (run detached)."""
+    base_pipeline.remote(SMOL_MODEL, "smollm3-3b_base_free")
+
+
+@app.function(volumes=VOLUMES, timeout=24 * 3600)
+def base_bio_sets(model_id: str, run_name: str, sets: list[str]) -> None:
+    """A base model with the free prompt on some biomedical sets, one container per set."""
+    list(evaluate_family.starmap([(model_id, run_name, "free", None, None, [f"paired_eval/data_bio/{d}.json"],
+                                   "/outputs/eval_paired_bio") for d in sets]))
+
+
+@app.local_entrypoint()
+def qwen_base_bio(sets: str = "JNLPBA-Rare,MedMentions-Rare"):
+    """Base Qwen3-4B-Thinking-2507 with the free prompt on biomedical sets not yet evaluated (comma-separated)."""
+    base_bio_sets.remote(PAIRED_MODEL, "qwen3-4b-thinking_base_free", sets.split(","))
+
+
+@app.local_entrypoint()
+def catch_up():
+    """Runs catch_up_pipeline remotely, so that a detached run survives the local
+    process (a starmap called from a local entrypoint is cancelled with it)."""
+    catch_up_pipeline.remote()
+
+
+@app.local_entrypoint()
+def medgemma_smoke():
+    """End-to-end check with MedGemma: 3 training steps per variant, base and students on 5 rows per set."""
+    family_pipeline.remote(MEDGEMMA_MODEL, "smoke_medgemma",
+                           ["--n-train-samples", "40", "--max-steps", "3", "--eval-steps", "3"], 5,
+                           "_medgemma", True)
+
+
+@app.local_entrypoint()
+def medgemma():
+    """Free and structured MedGemma students, and the base model (run detached)."""
+    family_pipeline.remote(MEDGEMMA_MODEL, "medgemma-1.5-4b", [], None, "_medgemma", True)
 
 
 @app.local_entrypoint()

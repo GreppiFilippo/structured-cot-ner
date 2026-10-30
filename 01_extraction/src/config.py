@@ -48,8 +48,8 @@ class Config:
     # recommendation (HF model card, readthedocs quickstart) for THINKING
     # mode (which this pipeline uses) is Temperature=0.6, TopP=0.95,
     # TopK=20, MinP=0. 0.7 is their recommendation for NON-thinking mode
-    # instead — the wrong one, used here by mistake until a tutor pointed
-    # out to check the model's own recommended settings.
+    # instead — the wrong one, used here by mistake until the model's own
+    # recommended settings were checked.
     temperature: float = 0.6
     # Coupled to --max-model-len in train.sh (4096 — see that file's
     # comment for the precise KV-cache-memory math behind this exact

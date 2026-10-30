@@ -1,5 +1,5 @@
 """Builds the evaluation sets of the free vs structured CoT experiment, with
-the query protocol asked by the tutors:
+the query protocol of the second phase:
 
 - CrossNER (ai, literature, music, politics, science; full test splits):
   for every sentence, all the types present in its gold annotation, plus 1-3
@@ -13,7 +13,7 @@ the query protocol asked by the tutors:
   (in-domain), used as it is: its requested types and Pile-NER silver labels.
 
 Every row carries both prompts, built with the exact templates of the
-tutors' dataset (checked to reproduce free_prompt and structured_prompt on
+paired-trace dataset (checked to reproduce free_prompt and structured_prompt on
 all its 5,822 rows): each model is evaluated with the prompt it was trained
 on, the base model with both.
 
@@ -22,7 +22,7 @@ span that is then not a substring of the sentence is reported (exact match
 needs the gold mention to be copyable from the text).
 
 Usage:
-    python3 build_tutor_eval.py --out-dir tutor_eval/data
+    python3 build_paired_eval.py --out-dir paired_eval/data
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ import sacremoses
 from build_crossner_eval import DOMAINS, REVISION, SOURCE, readable
 
 SEED = 42
-TUTOR_REPO = "disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1"
+PAIRED_REPO = "disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1"
 FREE_PROMPT = ("Extract named entities from the text for the given entity types.\n"
                "Return a JSON object whose keys are exactly the given entity types and whose values are lists of "
                "mentions copied verbatim from the text. If a type has no mentions, use an empty list.\n\n"
@@ -97,7 +97,7 @@ def build_crossner(dom: str, detok, rng: random.Random) -> tuple[list[dict], dic
 
 def build_pilener() -> list[dict]:
     rows = []
-    for r in datasets.load_dataset(TUTOR_REPO, split="test"):
+    for r in datasets.load_dataset(PAIRED_REPO, split="test"):
         p = prompts(r["text"], r["requested_types"])
         assert p["free_prompt"] == r["free_prompt"] and p["structured_prompt"] == r["structured_prompt"]
         gold = json.loads(r["silver_answer"])
@@ -109,7 +109,7 @@ def build_pilener() -> list[dict]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out-dir", default="tutor_eval/data")
+    ap.add_argument("--out-dir", default="paired_eval/data")
     ap.add_argument("--seed", type=int, default=SEED)
     args = ap.parse_args()
     out = Path(args.out_dir)

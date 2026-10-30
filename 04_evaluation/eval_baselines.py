@@ -1,8 +1,8 @@
 """Published open NER models evaluated with the protocol of the free vs
-structured CoT experiment: the same queries (build_tutor_eval.py /
-build_tutor_eval_bio.py: gold types + 1-3 in-domain distractors), the same
-exact typed F1 (eval_tutor.score), the same output files, so they are
-compared with the students by compare_tutor.py-style scripts.
+structured CoT experiment: the same queries (build_paired_eval.py /
+build_paired_eval_bio.py: gold types + 1-3 in-domain distractors), the same
+exact typed F1 (eval_paired.score), the same output files, so they are
+compared with the students by compare_paired.py-style scripts.
 
 - gliner: GLiNER-L v2.1 (urchade/gliner_large-v2.1, trained on Pile text
   annotated by Mistral), predict_entities with its default threshold 0.5.
@@ -17,7 +17,7 @@ is 0. Pile-NER is not used for them: both were trained on Pile passages.
 
 Usage:
     python3 eval_baselines.py --model gliner --run-name gliner-l-v2.1 \\
-        --data tutor_eval/data/crossner_ai.json --output-dir outputs_tutor
+        --data paired_eval/data/crossner_ai.json --output-dir outputs_paired
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import json
 import time
 from pathlib import Path
 
-from eval_tutor import score
+from eval_paired import score
 from src.metrics import _loads_or_none, iter_json_objects
 
 GLINER = "urchade/gliner_large-v2.1"
@@ -93,7 +93,7 @@ def main() -> None:
     ap.add_argument("--model", choices=["gliner", "uniner"], required=True)
     ap.add_argument("--run-name", required=True)
     ap.add_argument("--data", nargs="+", required=True)
-    ap.add_argument("--output-dir", default="outputs_tutor")
+    ap.add_argument("--output-dir", default="outputs_paired")
     ap.add_argument("--threshold", type=float, default=0.5, help="GLiNER only")
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()

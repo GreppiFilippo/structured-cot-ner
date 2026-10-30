@@ -2,7 +2,7 @@
 # Submits one sbatch job per judge — all three run in parallel on
 # faretra's other GPUs, each scoring the SAME input file independently.
 # Deliberately not Qwen-family (avoids same-family judge bias, per the
-# design agreed with the tutors — see jury_colab.ipynb).
+# design of the project — see jury_colab.ipynb).
 #
 # Usage: ./sbatch_launch_judge.sh outputs/free_cot_merged.jsonl
 

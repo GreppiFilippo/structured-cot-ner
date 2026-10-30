@@ -2,7 +2,7 @@
 # require CUDA 12.8+/13 — above what this cluster's drivers support (12.5,
 # confirmed via nvidia-smi on moro232). Verified by inspecting vllm==0.8.5's
 # own package metadata directly: it requires torch==2.6.0 (exact pin — the
-# same version the tutors independently recommend for this hardware),
+# same version the lab recommends for this hardware),
 # transformers>=4.51.1 (Qwen3 needs >=4.51.0), huggingface-hub>=0.30.0,
 # openai>=1.52.0. Also confirmed via a vLLM GitHub issue from Qwen3's launch
 # week: "vLLM v0.8.4 and higher natively supports all Qwen3 and Qwen3MoE

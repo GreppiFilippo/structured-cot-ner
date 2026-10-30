@@ -1,5 +1,5 @@
 """Results table and paired bootstrap of the free vs structured CoT
-experiment (outputs of eval_tutor.py).
+experiment (outputs of eval_paired.py).
 
 For every run and set: exact typed F1 (requested types only), the same
 without MISC, mean reasoning tokens and lost answers (no </think> or no
@@ -8,7 +8,7 @@ parsable JSON). Comparisons are paired: the same queries are resampled
 averaged, so each domain weighs the same, as in the reported mean.
 
 Usage:
-    python3 compare_tutor.py --dir outputs_tutor > tutor_results.txt
+    python3 compare_paired.py --dir outputs_paired > paired_results.txt
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def f1(c):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--dir", default="outputs_tutor")
+    ap.add_argument("--dir", default="outputs_paired")
     root = Path(ap.parse_args().dir)
     data = {(name, ds): load(root, ds, run) for name, run in RUNS.items() for ds in SETS}
 

@@ -68,7 +68,7 @@ class AsyncOpenAICompatibleClient(LLMClient):
         # runaway generation.
         #
         # 2026-08-05: temperature default corrected from 0.7 to 0.6 —
-        # tutors pointed out to check Qwen's own recommended settings.
+        # after checking Qwen's own recommended settings.
         # Qwen's official docs (confirmed identically across the HF model
         # card, readthedocs quickstart, and independent vendor summaries)
         # specify Temperature=0.6, TopP=0.95, TopK=20, MinP=0 for THINKING

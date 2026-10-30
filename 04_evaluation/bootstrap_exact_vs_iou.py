@@ -17,9 +17,12 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import sacremoses
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from src.metrics import exact_counts  # noqa: E402
+
+DETOK = sacremoses.MosesDetokenizer(lang="en")
 
 ROOT = Path(__file__).resolve().parent.parent
 # raw Modal results, most recent download first (same priority as collect_results.py)
@@ -34,6 +37,15 @@ PAIRS = [(P + "sft_v4", P + "sft_v4rej"), (P + "sft_v4", P + "sft_v4all"), (P + 
          (P + "sft_v5C", P + "sft_v5A"), ("qwen3-4b_sft_v5t", "qwen3-4b_sft_v4"), ("qwen3-4b_sft_v5t", "qwen3-4b_base")]
 
 
+def exact(r):
+    """Exact counts as in collect_results.score_folder: requested types only, gold
+    mentions Moses-detokenized like the text (all the sets compared here are built
+    from BIO tags)."""
+    gold = {k: [DETOK.detokenize(m.split()) for m in v] for k, v in (r.get("gt") or {}).items()}
+    pred = {k: v for k, v in (r.get("pred_parsed") or {}).items() if k in gold}
+    return exact_counts(gold, pred)
+
+
 def counts(ds, run, kind):
     for b in BASES:
         f = ROOT / b / ds / run / "predictions.jsonl"
@@ -42,8 +54,7 @@ def counts(ds, run, kind):
             for line in f.read_text(encoding="utf-8").splitlines():
                 if line.strip():
                     r = json.loads(line)
-                    out[r["idx"]] = (r["counts_type_agnostic"] if kind == "iou"
-                                     else exact_counts(r.get("gt") or {}, r.get("pred_parsed") or {}))
+                    out[r["idx"]] = r["counts_type_agnostic"] if kind == "iou" else exact(r)
             return out
     raise FileNotFoundError(f"{ds}/{run}")
 

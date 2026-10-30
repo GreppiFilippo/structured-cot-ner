@@ -1,5 +1,5 @@
 """Builds the two SFT files of the free vs structured CoT experiment from the
-tutors' dataset disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1.
+paired-trace dataset disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1.
 
 Each CoT is paired with the prompt it was generated from (free_cot with
 free_prompt, structured_cot with structured_prompt); the target is the
@@ -11,7 +11,7 @@ the dataset card (checked on all 3,822 examples, both variants), and
 train_qwen.py masks everything up to the generation prompt.
 
 Usage:
-    python3 build_tutor_cot_dataset.py --out-dir data
+    python3 build_paired_cot_dataset.py --out-dir data
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def main() -> None:
 
     train = load_dataset(REPO, split="train")
     for variant in ("free", "structured"):
-        path = out / f"pilener_tutor_{variant}_cot.jsonl"
+        path = out / f"pilener_paired_{variant}_cot.jsonl"
         with open(path, "w", encoding="utf-8") as f:
             for r in train:
                 cot = r[f"{variant}_cot"]

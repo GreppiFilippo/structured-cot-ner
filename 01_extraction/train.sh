@@ -43,7 +43,7 @@ fi
 #
 # 2026-08-13: switched from Qwen3-32B + on-the-fly bitsandbytes quantization
 # to Qwen/Qwen3-32B-AWQ, the official pre-quantized checkpoint Qwen
-# themselves publish — a tutor pointed out that on-the-fly bitsandbytes
+# themselves publish — on-the-fly bitsandbytes
 # quantization is known to be slower (vLLM's own startup log literally
 # warns "bitsandbytes quantization is not fully optimized yet"), and AWQ
 # has dedicated, well-optimized kernels built into vLLM (Marlin/Triton,

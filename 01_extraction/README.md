@@ -8,7 +8,7 @@ differ.
 to require CUDA 12.8+, above what this cluster's drivers support (12.5,
 confirmed via `nvidia-smi`). Verified three independent ways: directly from
 `vllm==0.8.5`'s own package metadata (requires exactly `torch==2.6.0`, the
-tutors' own recommended version, and `transformers>=4.51.1`); via a vLLM GitHub
+the lab's recommended version, and `transformers>=4.51.1`); via a vLLM GitHub
 issue from Qwen3's launch week confirming v0.8.4+ natively supports it; and via
 [vLLM's own official recipe page for Qwen/Qwen3-32B](https://recipes.vllm.ai/Qwen/Qwen3-32B),
 which states `vLLM 0.8.5+` as the model's own recommended minimum. Also checked

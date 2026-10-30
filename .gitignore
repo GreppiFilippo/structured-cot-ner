@@ -10,3 +10,11 @@ modal_terzo_backup/
 moro232_backup/
 .env
 slurm_logs/
+
+# local only: Modal archive, cost reports, thesis utilities and result tables (results are on Hugging Face)
+modal_archive_2026-10-29/
+report.csv
+04_evaluation/build_thesis_appendix.py
+04_evaluation/build_thesis_tables.py
+thesis_results/
+__pycache__/

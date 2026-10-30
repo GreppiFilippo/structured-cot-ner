@@ -6,7 +6,11 @@ predictions.jsonl and reports, with the current src/metrics.py:
   - the type-agnostic token-IoU F1 used so far (F1_ta), and
   - the exact typed F1 (F1_exact, METRIC_VERSION 4), recomputed from the
     stored gold ("gt") and parsed prediction ("pred_parsed"), so no model
-    is run and nothing is re-parsed.
+    is run and nothing is re-parsed. Only the requested types (the keys of
+    "gt", distractors included) are scored, as in the second phase: keys the
+    model adds outside them are ignored. On CrossNER and the biomedical sets
+    the gold mentions are first Moses-detokenized like the text the model saw
+    (see score_folder).
 Open-schema runs (phase 1 "post_sft_cot") name their own types, so the
 typed exact metric is not defined for them (left empty).
 
@@ -57,7 +61,12 @@ def group(ds):
     return "biomedical" if ds in BIO else "crossner" if ds in CROSSNER else "pilener" if ds == "pilener" else "other"
 
 
-def score_folder(folder: Path, open_schema: bool):
+def score_folder(folder: Path, open_schema: bool, detok=None):
+    """detok: Moses detokenizer for the sets built from BIO tags. Their first-phase
+    subsets show the model Moses-detokenized text but stored the gold mentions as
+    space-joined tokens ("Graves ' disease" for "Graves' disease"), which exact
+    matching cannot hit; the mentions are detokenized like the text, as the
+    second-phase sets do (build_paired_eval_bio.py)."""
     tp = gt = pc = 0
     tp_ta = gt_ta = pc_ta = 0.0
     n = parse_err = 0
@@ -73,7 +82,13 @@ def score_folder(folder: Path, open_schema: bool):
         if c:
             tp_ta += c[0]; gt_ta += c[1]; pc_ta += c[2]
         if not open_schema:
-            a, b, d = exact_counts(r.get("gt") or {}, r.get("pred_parsed") or {})
+            # only the requested types are scored (the keys of "gt", distractors included),
+            # as in the second phase (eval_paired.score): a key the model invents is ignored
+            gold = r.get("gt") or {}
+            if detok is not None:
+                gold = {k: [detok.detokenize(m.split()) for m in v] for k, v in gold.items()}
+            pred = {k: v for k, v in (r.get("pred_parsed") or {}).items() if k in gold}
+            a, b, d = exact_counts(gold, pred)
             tp += a; gt += b; pc += d
     row = {
         "n": n, "parse_errors": parse_err,
@@ -96,6 +111,8 @@ def main() -> None:
     out = ROOT / args.out
     out.mkdir(parents=True, exist_ok=True)
 
+    import sacremoses
+    detok = sacremoses.MosesDetokenizer(lang="en")
     rows, seen = [], set()
     for src, desc in SOURCES:
         base = ROOT / src
@@ -115,7 +132,8 @@ def main() -> None:
             row = {"run": run, "dataset": ds, "group": group(ds), "engine": ENGINE[src],
                    "status": "discarded (double BOS)" if run in DISCARDED else "valid",
                    "source": src, "path": str(folder.relative_to(ROOT))}
-            row.update(score_folder(folder, open_schema=folder.name == "post_sft_cot"))
+            row.update(score_folder(folder, open_schema=folder.name == "post_sft_cot",
+                                    detok=detok if ds in BIO or ds in CROSSNER else None))
             rows.append(row)
 
     rows.sort(key=lambda r: (r["run"], r["group"], r["dataset"]))

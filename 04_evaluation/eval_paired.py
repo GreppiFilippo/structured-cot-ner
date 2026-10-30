@@ -1,5 +1,5 @@
-"""Evaluation of the free vs structured CoT experiment, with the tutors'
-protocol, on the sets built by build_tutor_eval.py (CrossNER with gold types
+"""Evaluation of the free vs structured CoT experiment, with the protocol
+of the paired-trace dataset, on the sets built by build_paired_eval.py (CrossNER with gold types
 + 1-3 distractors, and the in-domain Pile-NER test split).
 
 - Prompt: the user message only (no system prompt), "free" or "structured"
@@ -17,9 +17,9 @@ protocol, on the sets built by build_tutor_eval.py (CrossNER with gold types
 
 Output, per dataset: <output-dir>/<dataset>/<run-name>/{predictions.jsonl,metrics.json}
 
-Usage (on a GPU machine, see 05_openvocab_sft/modal_app.py::tutor):
-    python3 eval_tutor.py --model-id Qwen/Qwen3-4B-Thinking-2507 --prompt free \\
-        --run-name base_free --data tutor_eval/data/crossner_ai.json
+Usage (on a GPU machine, see 05_openvocab_sft/modal_app.py::paired):
+    python3 eval_paired.py --model-id Qwen/Qwen3-4B-Thinking-2507 --prompt free \\
+        --run-name base_free --data paired_eval/data/crossner_ai.json
 """
 from __future__ import annotations
 
@@ -34,8 +34,13 @@ from pathlib import Path
 from src.metrics import _loads_or_none, exact_counts, f1_from_counts, iter_json_objects
 
 THINK_END = "</think>"
+# (opening, closing) marker of the reasoning, per model family. Qwen3-4B-Thinking-2507's
+# generation prompt already opens the block, so only the closing marker is looked for (None);
+# MedGemma-1.5 writes its own "<unused94>thought\n...<unused95>" block, and may also answer
+# without any, in which case the whole output is the answer.
+THOUGHT_MARKERS = {"think": (None, THINK_END), "medgemma": ("<unused94>", "<unused95>")}
 
-# Grammar of the tutors' structured run (dataset card: thinking constrained to three one-line
+# Grammar of the structured run of the paired-trace dataset (dataset card: thinking constrained to three one-line
 # fields, then the JSON answer constrained to a generic {type: [strings]} shape), in xgrammar's
 # EBNF. The generation prompt already ends with "<think>\n", so the output starts at TYPES.
 _FIELDS = 'root ::= "TYPES: " line "MENTIONS: " line "EDGE: " line "</think>\\n\\n" answer\n' \
@@ -48,22 +53,49 @@ _JSON = ('list ::= "[" ws (str (ws "," ws str)*)? ws "]"\n'
          'ws ::= [ \\t\\n]{0,16}\n')
 
 
+# Field instructions of the structured prompt: the "noedge" variant leaves out EDGE, and
+# "noedge_inv" also puts MENTIONS before TYPES (make_noedge_data.py edits the training
+# prompts in the same way)
+TYPES_INSTRUCTION = "TYPES: Which of the requested types occur in the text, and which appear to be absent.\n"
+MENTIONS_INSTRUCTION = ("MENTIONS: The mentions to extract for the types that occur, "
+                        "and any plausible ones you rejected.\n")
+EDGE_INSTRUCTION = "EDGE: Ambiguous boundaries or type assignments, and how you resolved them.\n"
+
+
+def prompt_text(row: dict, prompt: str) -> str:
+    """The user message of a row: free, structured, structured without the EDGE field
+    (noedge), or without EDGE and with MENTIONS before TYPES (noedge_inv)."""
+    if prompt not in ("noedge", "noedge_inv"):
+        return row[f"{prompt}_prompt"]
+    text = row["structured_prompt"]
+    assert text.count(EDGE_INSTRUCTION) == 1, row["id"]
+    text = text.replace(EDGE_INSTRUCTION, "")
+    if prompt == "noedge_inv":
+        assert text.count(TYPES_INSTRUCTION + MENTIONS_INSTRUCTION) == 1, row["id"]
+        text = text.replace(TYPES_INSTRUCTION + MENTIONS_INSTRUCTION, MENTIONS_INSTRUCTION + TYPES_INSTRUCTION)
+    return text
+
+
 def grammar_for(mode: str, requested: list[str]) -> str | None:
-    """none: free decoding; tutors: the tutors' grammar (any keys); keys: the same thinking
+    """none: free decoding; fields: the grammar of the structured run (any keys); keys: the same thinking
     fields, with the answer's keys fixed to the requested types, in their order."""
     if mode == "none":
         return None
-    if mode == "tutors":
+    if mode == "fields":
         return _FIELDS + 'answer ::= "{" ws (pair (ws "," ws pair)*)? ws "}"\npair ::= str ws ":" ws list\n' + _JSON
     keys = ' ws "," ws '.join(f'"\\"{t}\\"" ws ":" ws list' for t in requested)
     return _FIELDS + f'answer ::= "{{" ws {keys} ws "}}"\n' + _JSON
 
 
-def parse_answer(text: str, requested: list[str]) -> tuple[dict, str]:
+def parse_answer(text: str, requested: list[str], start: str | None = None,
+                 end: str = THINK_END) -> tuple[dict, str]:
     """(prediction restricted to the requested types, status)."""
-    if THINK_END not in text:
+    if end in text:
+        answer = text.split(end, 1)[1]
+    elif start is not None and start not in text:
+        answer = text  # answered without opening a reasoning block
+    else:
         return {}, "no_think_end"
-    answer = text.split(THINK_END, 1)[1]
     obj = None
     for cand in iter_json_objects(answer):
         obj = _loads_or_none(cand)
@@ -154,10 +186,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model-id", default="Qwen/Qwen3-4B-Thinking-2507")
     ap.add_argument("--adapter", default=None, help="Local LoRA adapter directory")
-    ap.add_argument("--prompt", choices=["free", "structured"], required=True)
+    ap.add_argument("--prompt", choices=["free", "structured", "noedge", "noedge_inv"], required=True)
     ap.add_argument("--run-name", required=True)
-    ap.add_argument("--data", nargs="+", required=True, help="Files written by build_tutor_eval.py")
-    ap.add_argument("--output-dir", default="outputs_tutor")
+    ap.add_argument("--data", nargs="+", required=True, help="Files written by build_paired_eval.py")
+    ap.add_argument("--output-dir", default="outputs_paired")
     ap.add_argument("--max-new-tokens", type=int, default=12288, help="Default: the teacher's free-run budget")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int, default=None, help="First N rows of each file (smoke tests)")
@@ -166,22 +198,33 @@ def main() -> None:
                          "see merge_runs.py)")
     # on a 24 GB RTX 3090, 0.9 / 256 sequences ran out of memory in the top-k/top-p sampler, which
     # sorts the full-vocabulary logits of every running sequence outside vLLM's reserved memory
-    ap.add_argument("--grammar", choices=["none", "tutors", "keys"], default="none",
+    ap.add_argument("--grammar", choices=["none", "fields", "keys"], default="none",
                     help="Constrained decoding (see grammar_for); default: free decoding")
     ap.add_argument("--think-budget-from", default=None, metavar="RUN",
                     help="Budget forcing: cap each query's reasoning at the tokens run RUN (same --output-dir) "
                          "used on it; a reasoning still open there is closed with </think> and the answer "
                          "is generated after it")
+    ap.add_argument("--thought-format", choices=["auto", *THOUGHT_MARKERS], default="auto",
+                    help="Markers of the reasoning block (THOUGHT_MARKERS); auto: medgemma for MedGemma "
+                         "models, think otherwise")
     ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     ap.add_argument("--max-num-seqs", type=int, default=128)
     args = ap.parse_args()
 
     import transformers
     from vllm import LLM, SamplingParams
-    from vllm.sampling_params import GuidedDecodingParams
+    if args.grammar != "none":
+        # only grammar runs need it; recent vLLM releases no longer export this name
+        from vllm.sampling_params import GuidedDecodingParams
 
     tok = transformers.AutoTokenizer.from_pretrained(args.model_id)
-    think_end_id = tok.convert_tokens_to_ids(THINK_END)
+    fmt = args.thought_format
+    if fmt == "auto":
+        fmt = "medgemma" if "medgemma" in args.model_id.lower() else "think"
+    think_start, think_end = THOUGHT_MARKERS[fmt]
+    if args.think_budget_from and fmt != "think":
+        ap.error("--think-budget-from supports only the think format")
+    think_end_id = tok.convert_tokens_to_ids(think_end)
     lora = None
     if args.adapter:
         from vllm.lora.request import LoRARequest
@@ -196,7 +239,7 @@ def main() -> None:
         return
     end = args.start + args.limit if args.limit else None
     data = {Path(f).stem: json.loads(Path(f).read_text(encoding="utf-8"))[args.start:end] for f in todo}
-    texts = {name: [tok.apply_chat_template([{"role": "user", "content": r[f"{args.prompt}_prompt"]}],
+    texts = {name: [tok.apply_chat_template([{"role": "user", "content": prompt_text(r, args.prompt)}],
                                             add_generation_prompt=True, tokenize=False) for r in rows]
              for name, rows in data.items()}
     longest = max(len(tok(t, add_special_tokens=False)["input_ids"]) for ts in texts.values() for t in ts)
@@ -225,8 +268,11 @@ def main() -> None:
         elapsed = time.time() - t0
         records = []
         for r, (ids, text, finish, forced) in zip(rows, gens):
-            n_reason = ids.index(think_end_id) if think_end_id in ids else len(ids)
-            pred, status = parse_answer(text, r["requested_types"])
+            pred, status = parse_answer(text, r["requested_types"], think_start, think_end)
+            if think_end_id in ids:
+                n_reason = ids.index(think_end_id)
+            else:  # no reasoning at all, or one cut by the token limit
+                n_reason = 0 if think_start is not None and think_start not in text else len(ids)
             records.append({"id": r["id"], "requested_types": r["requested_types"], "distractors": r["distractors"],
                             "gold": r["gold"], "pred": pred, "status": status, "finish_reason": finish,
                             "reasoning_tokens": n_reason, "output_tokens": len(ids), "budget_forced": forced,
@@ -238,6 +284,7 @@ def main() -> None:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         m = score(records) | {"run": args.run_name, "dataset": name, "model_id": args.model_id,
                               "adapter": args.adapter, "prompt": args.prompt, "grammar": args.grammar,
+                              "thought_format": fmt,
                               "think_budget_from": args.think_budget_from,
                               "budget_forced": sum(r["budget_forced"] for r in records),
                               "seed": args.seed,

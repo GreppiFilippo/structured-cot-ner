@@ -1,18 +1,18 @@
 #!/bin/bash
 # Runs one command of the free vs structured CoT experiment inside
-# tutor-cot-image (build_tutor/Dockerfile), same pattern as the other
+# paired-cot-image (build_paired/Dockerfile), same pattern as the other
 # stages: GPU from SLURM via $CUDA_VISIBLE_DEVICES, HF cache in ~/hf_cache.
 # The whole repository is mounted at /workspace, so training writes its
 # adapters to 05_openvocab_sft/work/ and the evaluation reads them there.
 #
 # Args: <workdir relative to the repo root> <command...>
-# e.g. run_docker_tutor.sh 04_evaluation python3 eval_tutor.py --prompt free ...
+# e.g. run_docker_paired.sh 04_evaluation python3 eval_paired.py --prompt free ...
 #
-# TUTOR_IMAGE selects another image (e.g. tutor-baselines-image for eval_baselines.py).
+# PAIRED_IMAGE selects another image (e.g. paired-baselines-image for eval_baselines.py).
 # HF_TOKEN (read access to disi-unibo-nlp-students) from 05_openvocab_sft/.env,
 # or from 03_sft_training/.env if that one does not exist.
 
-# run from the repository root (sbatch_tutor.sh submits with --chdir): under SLURM, $0 is a copy
+# run from the repository root (sbatch_paired.sh submits with --chdir): under SLURM, $0 is a copy
 # of this script in the spool directory, so the repository cannot be derived from it
 REPO="$(pwd)"
 LLM_CACHE_DIR="${HOME}/hf_cache"
@@ -39,5 +39,5 @@ docker run \
     --memory="28g" \
     --gpus '"device='"$CUDA_VISIBLE_DEVICES"'"' \
     -w "/workspace/$WORKDIR" \
-    "${TUTOR_IMAGE:-tutor-cot-image}" \
+    "${PAIRED_IMAGE:-paired-cot-image}" \
     "$@"

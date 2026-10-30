@@ -1,9 +1,9 @@
 """Joins the runs that together cover a set (e.g. a run on the first 100 rows
-and one started at row 100 with eval_tutor.py --start 100, same settings) into
-one run, and recomputes its metrics with eval_tutor.score.
+and one started at row 100 with eval_paired.py --start 100, same settings) into
+one run, and recomputes its metrics with eval_paired.score.
 
 Usage:
-    python3 merge_runs.py --dir outputs_tutor --parts RUN_A RUN_B --out RUN --data tutor_eval/data/crossner_ai.json ...
+    python3 merge_runs.py --dir outputs_paired --parts RUN_A RUN_B --out RUN --data paired_eval/data/crossner_ai.json ...
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import argparse
 import json
 from pathlib import Path
 
-from eval_tutor import score
+from eval_paired import score
 
 
 def main() -> None:

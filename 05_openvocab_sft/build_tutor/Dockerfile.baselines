@@ -1,9 +1,0 @@
-# tutor-cot-image plus the GLiNER library, for eval_baselines.py. A separate
-# image, so that the image of the main experiment is never changed under it.
-# gliner 0.2.29 accepts the image's transformers (>=4.51.3, <5.17); pinning
-# transformers keeps pip from moving it.
-#
-# Build on the node, from the repository root (after tutor-cot-image):
-#   docker build -f 05_openvocab_sft/build_tutor/Dockerfile.baselines -t tutor-baselines-image .
-FROM tutor-cot-image
-RUN pip install --no-cache-dir "gliner==0.2.29" "transformers==4.56.2"
