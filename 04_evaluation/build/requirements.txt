@@ -25,7 +25,7 @@ transformers
 
 # 2026-08-30: NOT pinned to the lab's suggested 3.3.1, for a second,
 # different reason than transformers above. The eval subset dataset
-# (filippogreppi/bioner-eval-subset) was built and pushed from Colab,
+# (structured-cot-ner/bioner-eval-subset) was built and pushed from Colab,
 # where `datasets` was installed unpinned (whatever was latest at build
 # time) — that version wrote the parquet files' embedded Arrow schema
 # metadata in a format that datasets==3.3.1 cannot parse back: a real

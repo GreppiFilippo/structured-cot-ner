@@ -42,6 +42,6 @@ docker run \
     cot-sft-image \
     python3 /workspace/train_sft.py \
     --data-path "$DATA_PATH" \
-    --hf-repo-id "${2:-filippogreppi/MedGemma-CoT-distilled}" \
+    --hf-repo-id "${2:-structured-cot-ner/medgemma-1.5-4b-cot-distilled-lora}" \
     --work-dir /workspace/work \
     "${@:3}"

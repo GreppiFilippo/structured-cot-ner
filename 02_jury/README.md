@@ -1,4 +1,11 @@
-# Jury
+# 02 — Jury (first phase)
+
+In the thesis the three judges are Gemma-3-4B-it, DeepSeek-R1-Distill-Llama-8B
+and Granite-4.1-8B, and a teacher output is accepted when the mean
+completeness and the mean correctness are both at least 0.6
+(`../01_extraction/prepare_sft_dataset_filtered.py`). Scores and accepted
+rows are published as
+[`structured-cot-ner/jury`](https://huggingface.co/datasets/structured-cot-ner/jury).
 
 An LLM-jury evaluation pipeline that scores entity-extraction results
 produced by another model (the "extractor", Step 1 of the wider project)

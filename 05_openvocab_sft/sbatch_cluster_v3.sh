@@ -25,7 +25,7 @@ GPU="nvidia_geforce_rtx_3090:1"
 LOG_DIR="$REPO/slurm_logs"
 mkdir -p "$LOG_DIR"
 
-HF_DATA="hf://filippogreppi/openvocab-cot-sft"
+HF_DATA="hf://structured-cot-ner/openvocab-sft"
 QWEN_ID="Qwen/Qwen3-4B"
 QWEN_ADAPTER="filippogreppi/Qwen3-4B-openvocab-cot-v3"
 MEDGEMMA_ADAPTER="filippogreppi/MedGemma-openvocab-cot-v3"

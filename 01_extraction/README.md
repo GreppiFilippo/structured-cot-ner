@@ -1,8 +1,11 @@
-# Full run — all 45,889 rows
+# 01 — Teacher extraction over Pile-NER (first phase)
 
-Same design and same code as `../smoke_test_cot/` (async pipeline, resume, HF
-backup, circuit breaker, vLLM serving) — only the launcher script and scale
-differ.
+The teacher (Qwen3-32B, thinking mode, served with vLLM) reasons on each
+Pile-NER passage and extracts its entities without any list of types. The
+merged output is published as
+[`structured-cot-ner/teacher-cot-pile-ner`](https://huggingface.co/datasets/structured-cot-ner/teacher-cot-pile-ner)
+(`free_cot_merged.jsonl`). The run covers all 45,889 rows: async pipeline,
+resume, Hugging Face backup and circuit breaker.
 
 **2026-08-04**: pinned to `vllm==0.8.5` after the default (`0.26.0`) turned out
 to require CUDA 12.8+, above what this cluster's drivers support (12.5,

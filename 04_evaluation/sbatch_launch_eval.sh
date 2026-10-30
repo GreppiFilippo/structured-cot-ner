@@ -1,7 +1,7 @@
 #!/bin/bash
 # Submits 18 sbatch jobs — 9 datasets x 2 models (baseline, pretrain) —
 # each on its own GPU, reading from the fixed subset on HF
-# (filippogreppi/bioner-eval-subset) instead of re-deriving prompts from
+# (structured-cot-ner/bioner-eval-subset) instead of re-deriving prompts from
 # the raw IOB datasets each time.
 #
 # Unlike the original Kaggle notebook (which loaded both models

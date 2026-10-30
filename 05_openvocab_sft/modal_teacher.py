@@ -26,7 +26,7 @@ from pathlib import Path
 import modal
 
 TEACHER = "Qwen/Qwen3-32B-FP8"
-SOURCE = "hf://filippogreppi/openvocab-cot-sft/openvocab_train_v4_all.jsonl"
+SOURCE = "hf://structured-cot-ner/openvocab-sft/openvocab_train_v4_all.jsonl"
 
 image = (
     modal.Image.from_registry("nvidia/cuda:13.0.1-devel-ubuntu24.04", add_python="3.12")

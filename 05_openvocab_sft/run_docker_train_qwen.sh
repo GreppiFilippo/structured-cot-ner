@@ -8,7 +8,7 @@
 #   data_path: relative to this folder, or hf://<owner>/<dataset-repo>/<file>
 #   tag:       names the work folder (work/<tag>), so runs never share checkpoints
 # e.g. run_docker_train_qwen.sh Qwen/Qwen3-4B \
-#          hf://filippogreppi/openvocab-cot-sft/openvocab_train_v3_qwen.jsonl \
+#          hf://structured-cot-ner/openvocab-sft/openvocab_train_v3_qwen.jsonl \
 #          qwen3-4b_v3 filippogreppi/Qwen3-4B-openvocab-cot-v3
 #
 # HF_TOKEN (write access, to push the adapter) from .env here, or from

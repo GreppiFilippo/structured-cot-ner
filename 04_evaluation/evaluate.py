@@ -1,6 +1,6 @@
 """Evaluates ONE model (baseline, MedGemma-pretrain, or the CoT-distilled
 model) on ONE of the 9 BioNER datasets, reading from the fixed subset
-built by build_eval_subset.py (filippogreppi/bioner-eval-subset).
+built by build_eval_subset.py (structured-cot-ner/bioner-eval-subset).
 
 One job = one (model, dataset) pair — meant to run as parallel SLURM
 jobs, each with its own dedicated GPU.
@@ -41,9 +41,9 @@ from src.metrics import parse_gold, score_run, write_results
 from src.prompts import FreeCoTPromptBuilder
 
 BASE_MODEL_ID = "google/medgemma-1.5-4b-it"
-PRETRAIN_PATH = "filippogreppi/MedGemma-pretrain"
-COT_DISTILLED_PATH = "filippogreppi/MedGemma-CoT-distilled"
-SUBSET_REPO_ID_DEFAULT = "filippogreppi/bioner-eval-subset"
+PRETRAIN_PATH = "structured-cot-ner/medgemma-1.5-4b-pretrain-lora"
+COT_DISTILLED_PATH = "structured-cot-ner/medgemma-1.5-4b-cot-distilled-lora"
+SUBSET_REPO_ID_DEFAULT = "structured-cot-ner/bioner-eval-subset"
 
 # output subfolder per model type; "pre_sft"/"post_sft" are kept as-is
 # because resume-skip and the aggregate scripts look them up by name

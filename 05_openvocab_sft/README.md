@@ -1,53 +1,66 @@
-# 05 — Open-vocabulary SFT dataset (Qwen3-4B, thinking mode)
+# 05 — Type-conditioned SFT and the free vs structured CoT experiment
 
-Step 2 of the revised plan: Pile-NER restricted to the rows that have a
-jury-filtered teacher CoT, in the **open-vocabulary** format used by the
-evaluation benchmarks — the entity types to extract are given in the
-prompt, and the target is the original Pile-NER gold.
+Training data and LoRA training of the students of both phases. Every
+student is trained with `train_qwen.py`, except the first MedGemma run
+(`../03_sft_training/`).
+
+## Training (`train_qwen.py`)
+
+LoRA SFT of a model in thinking format: each example is rendered with the
+model's own chat template, everything up to the generation prompt is
+masked, and the loss covers `<think>reasoning</think>`, the JSON answer and
+the end-of-turn token. Examples longer than `--max-seq-length` are dropped,
+not truncated. Defaults: LoRA r 16, alpha 32, dropout 0.05 on all attention
+and MLP projections, learning rate 1e-4 with cosine schedule and 3% warmup,
+2 epochs, effective batch 8, bf16, 5% validation split, best checkpoint by
+validation loss, seed 42.
 
 ```bash
-python3 build_openvocab_dataset.py \
-    --extractions free_cot_merged.jsonl \
-    --ids-from train.jsonl \
-    --output data/openvocab_train.jsonl
+./run_docker_train_qwen.sh Qwen/Qwen3-4B \
+    hf://structured-cot-ner/openvocab-sft/openvocab_train_v4_qwen.jsonl \
+    qwen3-4b_v4 <your-hf-user>/qwen3-4b-openvocab-v4-lora
 ```
 
-- `free_cot_merged.jsonl`: step 1 output (HF: `filippogreppi/free-cot-merged`)
-- `train.jsonl`: any `.jsonl` with an `id` field listing the rows to keep —
-  e.g. the jury-filtered set used for the MedGemma SFT
-  (HF: `filippogreppi/medgemma-cot-sft`)
+The same script runs on a small local GPU (`run_pilot_windows.ps1`,
+`run_full_windows.ps1`) and on Modal (`modal_app.py`); only the flags change.
 
-Each example is `{"id", "messages", "meta"}`:
+## First phase: type-conditioned datasets
 
-- **system + user**: exactly the closed-schema prompt the baseline gets in
-  evaluation (read from `../04_evaluation/build_eval_subset.py`, not
-  copied), with `ENTITY TYPES` = the row's Pile-NER gold types, plus
-  `--n-negative-types` absent types answered with `[]` (default 0).
-- **assistant**: `<think>\n{teacher reasoning}\n</think>\n\n{JSON}` with the
-  Pile-NER gold as JSON (spans de-duplicated per type — 31% of the raw
-  gold spans are repeats). Checked against the `Qwen/Qwen3-4B` chat
-  template: the `<think>` block of the final turn is kept, and the
-  generation prompt is an exact prefix of the rendered example, so the loss
-  can be masked up to it.
-- **meta**: how much the teacher reasoning agrees with the gold it now
-  precedes.
+Each example is a Pile-NER passage with a list of entity types to extract
+(the gold types, optionally with absent types answered with `[]`), the teacher
+reasoning in the thinking block, and a JSON answer.
 
-## Reasoning/gold agreement on the 6,895 jury-filtered rows
-
-The teacher reasoning was generated for the open-schema task, so it does
-not always lead to the gold JSON it now precedes (6,599 examples after
-dropping 296 rows with empty gold):
-
-| | |
+| Script | Builds |
 |---|---|
-| gold spans the teacher also extracted | 57.3% |
-| gold spans the teacher explicitly rejected | 8.5% (in 41.5% of examples) |
-| gold spans mentioned anywhere in the reasoning | 74.0% |
-| examples where teacher entities == gold | 20.7% |
-| reasoning that talks about the old output format (JSON, `excluded`/`entities` arrays, schema) | 30.4% (48% of the native-thinking-fallback traces) |
-| reasoning source | 2,638 visible, 3,961 native-thinking fallback |
+| `build_openvocab_dataset.py` | v3 and v4 files: teacher reasoning from the first phase (`structured-cot-ner/teacher-cot-pile-ner`) on the rows accepted by the jury (`structured-cot-ner/jury`, `jury_filtered_train.jsonl`), with the Pile-NER gold as answer |
+| `modal_teacher.py` | a second teacher run (Qwen3-32B) that receives the student's prompt, with the list of types |
+| `build_schema_teacher_dataset.py` | v5 files from that run: reasoning and answer from the same teacher call |
 
-`--drop-teacher-excluded-gold` and `--drop-old-format-talk` remove the two
-clearest kinds of conflict; with both, 2,877 examples remain. Whether to
-filter (fewer, more consistent examples) or keep everything is an open
-decision.
+All files are in
+[`structured-cot-ner/openvocab-sft`](https://huggingface.co/datasets/structured-cot-ner/openvocab-sft).
+The thesis calls the versions v1, v2 and v3; the files are named v3, v4
+and v5.
+
+## Second phase: free vs structured CoT
+
+The teacher traces come from the paired-trace dataset
+`disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1`: for each of
+3,822 Pile-NER queries, a free trace, a structured trace (`TYPES`,
+`MENTIONS`, `EDGE`) and one answer.
+
+| Script | Does |
+|---|---|
+| `build_paired_cot_dataset.py` | the two training files, one per trace format, with the same queries and answers |
+| `sbatch_paired.sh` | builds the data and the CrossNER and Pile-NER evaluation sets, trains the two Qwen3-4B-Thinking-2507 students, evaluates them and the base model |
+| `sbatch_paired_bio.sh` | the same evaluation on the 9 biomedical sets |
+| `sbatch_paired_base_structured.sh` | completes the evaluation of the base model with the structured prompt |
+| `sbatch_baselines.sh` | GLiNER-L v2.1 and UniNER-7B-type on the same queries |
+| `sbatch_paired_extra.sh` | follow-up runs (constrained decoding, budget forcing) not reported in the thesis |
+| `modal_app.py` | the same pipeline on Modal (used for SmolLM3-3B and for the larger evaluations) |
+| `run_docker_paired.sh` | runs one command inside `paired-cot-image` (`build_paired/Dockerfile`) |
+
+The evaluation itself is `../04_evaluation/eval_paired.py`, and the
+comparison with paired bootstrap is `../04_evaluation/compare_paired.py`.
+
+Reading the paired-trace dataset needs an `HF_TOKEN` with access to it, in
+a local `.env` file.

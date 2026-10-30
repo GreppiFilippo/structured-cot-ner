@@ -8,7 +8,7 @@ differ.
 Usage:
     python3 train_sft.py \\
         --data-path data/sft_ready_filtered_v3.jsonl \\
-        --hf-repo-id filippogreppi/MedGemma-CoT-distilled
+        --hf-repo-id structured-cot-ner/medgemma-1.5-4b-cot-distilled-lora
 """
 from __future__ import annotations
 
@@ -275,7 +275,7 @@ def main() -> None:
     parser.add_argument("--data-path", required=True,
                         help="Local .jsonl (e.g. sft_ready_filtered_v3.jsonl), or hf://<owner>/<dataset-repo>/<file>")
     parser.add_argument("--base-model-id", default="google/medgemma-1.5-4b-it")
-    parser.add_argument("--hf-repo-id", default="filippogreppi/MedGemma-CoT-distilled")
+    parser.add_argument("--hf-repo-id", default="structured-cot-ner/medgemma-1.5-4b-cot-distilled-lora")
     parser.add_argument("--work-dir", default="./work")
     parser.add_argument("--validation-size", type=float, default=0.05)
     parser.add_argument("--n-train-samples", type=int, default=None, help="Cap on training rows; omit to use all")

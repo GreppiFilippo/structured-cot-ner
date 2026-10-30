@@ -155,7 +155,7 @@ def main() -> None:
     parser.add_argument("--extractions", required=True, help="free_cot_merged.jsonl (step 1 output)")
     parser.add_argument("--ids-from", required=True,
                         help="Any .jsonl with an 'id' field listing the rows to keep, e.g. the jury-filtered "
-                             "SFT set (filippogreppi/medgemma-cot-sft train.jsonl)")
+                             "SFT set (structured-cot-ner/jury jury_filtered_train.jsonl)")
     parser.add_argument("--output", required=True)
     parser.add_argument("--n-negative-types", type=int, default=0,
                         help="Absent entity types added to each prompt (answered with []), sampled with "

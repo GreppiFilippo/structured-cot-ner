@@ -29,7 +29,7 @@ from src.metrics import OPEN_SCHEMA_MODEL_TYPES, score_run, write_results
 
 DATASETS = ["ncbi", "bc5cdr", "bc2gm", "bc4chemd", "AnatEM", "JNLPBA", "JNLPBA-Rare", "MedMentions-Rare", "biored"]
 CONDITIONS = {"pre_sft": "baseline", "post_sft": "pretrain", "post_sft_cot": "cot", "post_sft_cot_typed": "cot_typed"}
-SUBSET_REPO_ID_DEFAULT = "filippogreppi/bioner-eval-subset"
+SUBSET_REPO_ID_DEFAULT = "structured-cot-ner/bioner-eval-subset"
 
 
 def load_subset(repo_id, dataset_name, hf_token, subset_dir=None):

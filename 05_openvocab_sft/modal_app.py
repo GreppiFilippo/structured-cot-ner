@@ -39,10 +39,10 @@ EVAL_TIMEOUT_S = int(os.environ.get("EVAL_TIMEOUT_S", 8 * 3600))
 GPU = "L40S"  # 48 GB, faster than an RTX 3090; ~2 $/h
 
 DATASETS = ["ncbi", "bc5cdr", "bc2gm", "bc4chemd", "AnatEM", "JNLPBA", "JNLPBA-Rare", "MedMentions-Rare", "biored"]
-HF_DATA = "hf://filippogreppi/openvocab-cot-sft/openvocab_train_v3_qwen.jsonl"
+HF_DATA = "hf://structured-cot-ner/openvocab-sft/openvocab_train_v3_qwen.jsonl"
 # the 9 benchmarks + the in-domain Pile-NER test (its own subset repo)
 ALL = DATASETS + ["pilener"]
-PILENER = "filippogreppi/pilener-eval-subset"
+PILENER = "structured-cot-ner/pilener-eval-subset"
 
 # CUDA *devel* base (nvcc): vLLM JIT-compiles some kernels at startup. Its
 # CUDA version must match the torch wheel vLLM pulls in (cu130 for 0.30.0).
@@ -392,7 +392,7 @@ def medgemma():
 @app.local_entrypoint()
 def grid(model_id: str = "Qwen/Qwen3-1.7B", runs: str = "base", datasets: str = "", subset_repo: str = ""):
     """e.g. --runs base,v3=/outputs/work/qwen3-1.7b_v3/adapter  (run names get the model slug prefix);
-    --datasets pilener --subset-repo filippogreppi/pilener-eval-subset for the in-domain Pile-NER set"""
+    --datasets pilener --subset-repo structured-cot-ner/pilener-eval-subset for the in-domain Pile-NER set"""
     slug = model_id.split("/")[-1].lower()
     parsed = []
     for item in runs.split(","):
@@ -424,8 +424,8 @@ def smoke_eval(adapter: str = "", model_id: str = "Qwen/Qwen3-1.7B", run_name: s
 def full(model_id: str = "Qwen/Qwen3-4B",
          variants: str = "v4=openvocab_train_v4_qwen.jsonl,v4lo=openvocab_train_v4_labelonly.jsonl",
          eval_base: bool = True):
-    """variants: tag=<file in the filippogreppi/openvocab-cot-sft dataset repo>, comma-separated"""
+    """variants: tag=<file in the structured-cot-ner/openvocab-sft dataset repo>, comma-separated"""
     slug = model_id.split("/")[-1].lower()
-    parsed = [(tag, f"hf://filippogreppi/openvocab-cot-sft/{f}") for tag, f in (v.split("=") for v in variants.split(","))]
+    parsed = [(tag, f"hf://structured-cot-ner/openvocab-sft/{f}") for tag, f in (v.split("=") for v in variants.split(","))]
     for r in pipeline.remote(model_id, slug, parsed, eval_base):
         print(r)

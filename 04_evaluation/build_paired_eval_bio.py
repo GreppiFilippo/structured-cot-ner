@@ -4,7 +4,7 @@ experiment, with the same query protocol as the CrossNER ones
 
 - Sentences: the same 500 test sentences per dataset as the earlier
   evaluations (build_eval_subset.py: same splits, indices drawn with
-  default_rng(42)), checked against filippogreppi/bioner-eval-subset.
+  default_rng(42)), checked against structured-cot-ner/bioner-eval-subset.
 - Requested types: every type present in the sentence's gold, plus 1-3
   distractors (number drawn uniformly per sentence) among the labels of THE
   SAME DATASET that do not occur in the sentence, shuffled; one fixed seed.
@@ -37,7 +37,7 @@ from build_eval_subset import BIONER_DATASETS, RANDOM_SEED
 from build_paired_eval import SEED, prompts, spans
 
 N_PER_DATASET = 500
-CHECK_REPO = "filippogreppi/bioner-eval-subset"
+CHECK_REPO = "structured-cot-ner/bioner-eval-subset"
 
 
 def upper_snake(label: str) -> str:

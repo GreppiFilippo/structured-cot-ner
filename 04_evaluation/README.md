@@ -1,6 +1,21 @@
 # 04 — Evaluation
 
-Evaluates three model variants — a zero-shot baseline, a label-only
+| Script | Evaluates |
+|---|---|
+| `evaluate.py` | first phase: base models and students on the 9 biomedical sets (`structured-cot-ner/bioner-eval-subset`), and, with `--subset-repo-id`, CrossNER (`build_crossner_eval.py`, `structured-cot-ner/crossner-eval-subset`) and Pile-NER (`build_pilener_eval.py`, `structured-cot-ner/pilener-eval-subset`) |
+| `eval_paired.py`, `compare_paired.py` | second phase: free vs structured CoT, on the sets built by `build_paired_eval.py` and `build_paired_eval_bio.py`, with paired bootstrap |
+| `eval_baselines.py` | GLiNER-L v2.1 and UniNER-7B-type on the second-phase queries |
+| `bootstrap_exact_vs_iou.py` | first-phase paired bootstrap with the exact metric of the thesis |
+
+The metric of the thesis is micro F1 with exact, case-insensitive matching
+of each mention within its type, over the requested types only, with
+detokenized gold for CrossNER and the biomedical sets
+(`src/metrics.exact_counts`). Predictions and metrics of every run are in
+`structured-cot-ner/eval-results`. The rest of this README documents the
+first evaluation of MedGemma, which also introduced the earlier metric
+versions.
+
+The first evaluation compared three model variants — a zero-shot baseline, a label-only
 distilled model, and the CoT-distilled model this thesis builds — on 9
 external biomedical NER benchmarks, using a fixed 500-row-per-dataset
 evaluation subset so that all three models are compared on exactly the
@@ -19,7 +34,7 @@ docker build -f build/Dockerfile -t bioner-eval-image .
 ## 1. Build the fixed evaluation subset (once)
 
 ```bash
-python3 build_eval_subset.py --n-per-dataset 500 --repo-id filippogreppi/bioner-eval-subset
+python3 build_eval_subset.py --n-per-dataset 500 --repo-id structured-cot-ner/bioner-eval-subset
 ```
 
 Samples 500 rows (deterministic, seed 42) from each of the 9 source
@@ -204,18 +219,6 @@ Then run `run_docker_eval.sh "cot_typed" <dataset> --max-new-tokens 5120`
 for the 9 datasets (results in `outputs/<dataset>/post_sft_cot_typed/`).
 Here "all" measures the spans found regardless of their label, and
 "requested types only" additionally requires the requested label.
-
-## Known result and open question
-
-The summary below predates metric version 2 and the CoT
-gold fix — re-check it against `comparison_table.csv` after re-scoring.
-In short: CoT distillation clearly corrects the severe overfitting seen in
-the label-only model on some datasets (e.g.\ bc2gm, AnatEM), but does
-not on average beat the zero-shot baseline across the 9 datasets. Not
-yet confirmed experimentally, but plausible: the teacher's reasoning
-was distilled from a general-domain corpus (Pile-NER), while MedGemma's
-own zero-shot baseline already carries strong biomedical-domain priors
-— the distillation may be diluting that prior rather than adding to it.
 
 ## File layout
 

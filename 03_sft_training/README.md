@@ -1,4 +1,10 @@
-# SFT Training — CoT Distillation into MedGemma-4B
+# 03 — First LoRA fine-tuning of MedGemma (first phase)
+
+This is the first MedGemma run of the thesis, on the open-schema traces
+accepted by the jury; its adapter is
+`structured-cot-ner/medgemma-1.5-4b-cot-distilled-lora`. All later students,
+including the type-conditioned MedGemma, are trained with
+`../05_openvocab_sft/train_qwen.py`.
 
 Fine-tunes MedGemma-4B via LoRA on the jury-filtered Chain-of-Thought dataset
 (produced by `../01_extraction/prepare_sft_dataset_filtered.py`) — reasoning
