@@ -9,7 +9,7 @@ the query protocol of the second phase:
   label of the domain like the others, so it is requested when present and
   can be drawn as a distractor (the metric is per type, so it can be left out
   afterwards without new generations).
-- Pile-NER test split of disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1
+- Pile-NER test split of structured-cot-ner/pilener-teacher-cot-agreement-v1
   (in-domain), used as it is: its requested types and Pile-NER silver labels.
 
 Every row carries both prompts, built with the exact templates of the
@@ -37,7 +37,7 @@ import sacremoses
 from build_crossner_eval import DOMAINS, REVISION, SOURCE, readable
 
 SEED = 42
-PAIRED_REPO = "disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1"
+PAIRED_REPO = "structured-cot-ner/pilener-teacher-cot-agreement-v1"
 FREE_PROMPT = ("Extract named entities from the text for the given entity types.\n"
                "Return a JSON object whose keys are exactly the given entity types and whose values are lists of "
                "mentions copied verbatim from the text. If a type has no mentions, use an empty list.\n\n"

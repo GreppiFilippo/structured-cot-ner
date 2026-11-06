@@ -9,7 +9,7 @@
 # e.g. run_docker_paired.sh 04_evaluation python3 eval_paired.py --prompt free ...
 #
 # PAIRED_IMAGE selects another image (e.g. paired-baselines-image for eval_baselines.py).
-# HF_TOKEN (read access to disi-unibo-nlp-students) from 05_openvocab_sft/.env,
+# HF_TOKEN (optional: the datasets are public) from 05_openvocab_sft/.env,
 # or from 03_sft_training/.env if that one does not exist.
 
 # run from the repository root (sbatch_paired.sh submits with --chdir): under SLURM, $0 is a copy

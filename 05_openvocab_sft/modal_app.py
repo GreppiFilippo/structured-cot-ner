@@ -36,6 +36,8 @@ CODE = "/root/code"
 # per-container cap for evaluate_run: a stuck job is billed until it hits this.
 # Short evaluations (e.g. CrossNER) can lower it: EVAL_TIMEOUT_S=1800 modal run ...
 EVAL_TIMEOUT_S = int(os.environ.get("EVAL_TIMEOUT_S", 8 * 3600))
+# the same cap for a training container (TRAIN_TIMEOUT_S=18000 modal run ...)
+TRAIN_TIMEOUT_S = int(os.environ.get("TRAIN_TIMEOUT_S", 24 * 3600))
 GPU = "L40S"  # 48 GB, faster than an RTX 3090; ~2 $/h
 
 DATASETS = ["ncbi", "bc5cdr", "bc2gm", "bc4chemd", "AnatEM", "JNLPBA", "JNLPBA-Rare", "MedMentions-Rare", "biored"]
@@ -94,7 +96,7 @@ def _run(cmd: list[str], cwd: str) -> None:
         hf_cache.commit()
 
 
-@app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=24 * 3600)
+@app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=TRAIN_TIMEOUT_S)
 def train(model_id: str, data_path: str, tag: str, hf_repo_id: str | None, extra: list[str] = ()) -> str:
     Path("/outputs/env").mkdir(parents=True, exist_ok=True)
     freeze = subprocess.run(["pip", "freeze"], capture_output=True, text=True).stdout
@@ -235,6 +237,9 @@ def paired():
 # prompt), so the training files of the Qwen students are used unchanged.
 SMOL_MODEL = "HuggingFaceTB/SmolLM3-3B"
 PAIRED_BIO = [f"paired_eval/data_bio/{d}.json" for d in DATASETS]
+# evaluation sets per container, with their output directory
+PAIRED_GROUPS = [(PAIRED_EVAL[:5], "/outputs/eval_paired"), (PAIRED_EVAL[5:], "/outputs/eval_paired"),
+                 (PAIRED_BIO, "/outputs/eval_paired_bio")]
 
 
 @app.function(gpu=GPU, volumes=VOLUMES, secrets=SECRETS, timeout=EVAL_TIMEOUT_S)
@@ -252,18 +257,17 @@ def evaluate_family(model_id: str, run_name: str, prompt: str, adapter: str | No
 @app.function(volumes=VOLUMES, timeout=24 * 3600)
 def family_pipeline(model_id: str, prefix: str, train_extra: list[str], limit: int | None,
                     data_suffix: str = "", eval_base: bool = False,
-                    variants: tuple[str, ...] = ("free", "structured")) -> None:
+                    variants: tuple[str, ...] = ("free", "structured"),
+                    groups: list = PAIRED_GROUPS, base_groups: list | None = None) -> None:
     """Trains a student of model_id per CoT variant (by default free and structured) in
     parallel, then evaluates each with its own prompt on CrossNER, on the Pile-NER test
-    split and on the nine biomedical sets, in three separate containers (a stopped
+    split and on the nine biomedical sets, one container per group of sets (a stopped
     container loses only its own group). eval_base also evaluates the base model with
-    the free prompt, while the students train."""
+    the free prompt, while the students train (base_groups: its own split, default groups)."""
     trainings = {v: train.spawn(model_id, f"{CODE}/paired_data/{v}{data_suffix}.jsonl", f"{prefix}_{v}", None,
                                 PAIRED_TRAIN_ARGS + train_extra) for v in variants}
-    groups = [(PAIRED_EVAL[:5], "/outputs/eval_paired"), (PAIRED_EVAL[5:], "/outputs/eval_paired"),
-              (PAIRED_BIO, "/outputs/eval_paired_bio")]
     evals = [evaluate_family.spawn(model_id, f"{prefix}_base_free", "free", None, limit, data, out)
-             for data, out in groups] if eval_base else []
+             for data, out in (base_groups or groups)] if eval_base else []
     for v, call in trainings.items():
         adapter = call.get()
         evals += [evaluate_family.spawn(model_id, f"{prefix}_sft_{v}", v, adapter, limit, data, out)
@@ -315,6 +319,38 @@ def smol_smoke():
 def smol():
     """Free and structured SmolLM3-3B students (run detached)."""
     family_pipeline.remote(SMOL_MODEL, "smollm3-3b", [], None)
+
+
+# Qwen3-8B, same protocol as Qwen3-1.7B and Qwen3-0.6B (sbatch_paired_small.sh). In bf16 it
+# does not fit in the 24 GB of an RTX 3090 on the longest free examples, so it runs here.
+# The sets are split over more containers, to use the 10 GPUs of the account at once:
+# 2 trainings + 8 base groups, then 4 groups per student.
+QWEN8B_MODEL = "Qwen/Qwen3-8B"
+_CROSSNER, _PILENER = PAIRED_EVAL[:5], PAIRED_EVAL[5:]
+QWEN8B_BASE_GROUPS = [(_CROSSNER[:2], "/outputs/eval_paired"), (_CROSSNER[2:4], "/outputs/eval_paired"),
+                      (_CROSSNER[4:], "/outputs/eval_paired"), (_PILENER, "/outputs/eval_paired")] \
+    + [(PAIRED_BIO[i:i + 2], "/outputs/eval_paired_bio") for i in (0, 2, 4)] \
+    + [(PAIRED_BIO[6:], "/outputs/eval_paired_bio")]
+QWEN8B_GROUPS = [(_CROSSNER, "/outputs/eval_paired"), (_PILENER, "/outputs/eval_paired"),
+                 (PAIRED_BIO[:5], "/outputs/eval_paired_bio"), (PAIRED_BIO[5:], "/outputs/eval_paired_bio")]
+
+
+@app.local_entrypoint()
+def qwen8b_smoke():
+    """Speed check before the full run (about 1 $): 3 training steps on the free traces,
+    then 20 rows of CrossNER AI and of the Pile-NER test with the base model and that adapter."""
+    groups = [(_CROSSNER[:1] + _PILENER, "/outputs/eval_paired")]
+    family_pipeline.remote(QWEN8B_MODEL, "smoke_qwen3-8b",
+                           ["--n-train-samples", "40", "--max-steps", "3", "--eval-steps", "3"], 20,
+                           eval_base=True, variants=("free",), groups=groups)
+
+
+@app.local_entrypoint()
+def qwen8b():
+    """Free and structured Qwen3-8B students and the base model (run detached, with
+    TRAIN_TIMEOUT_S and EVAL_TIMEOUT_S set)."""
+    family_pipeline.remote(QWEN8B_MODEL, "qwen3-8b", [], None, eval_base=True,
+                           groups=QWEN8B_GROUPS, base_groups=QWEN8B_BASE_GROUPS)
 
 
 # MedGemma-1.5-4B, the medical student of the first phase: same queries, prompts,

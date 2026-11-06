@@ -44,7 +44,7 @@ and v5.
 ## Second phase: free vs structured CoT
 
 The teacher traces come from the paired-trace dataset
-`disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1`: for each of
+`structured-cot-ner/pilener-teacher-cot-agreement-v1`: for each of
 3,822 Pile-NER queries, a free trace, a structured trace (`TYPES`,
 `MENTIONS`, `EDGE`) and one answer.
 
@@ -55,12 +55,15 @@ The teacher traces come from the paired-trace dataset
 | `sbatch_paired_bio.sh` | the same evaluation on the 9 biomedical sets |
 | `sbatch_paired_base_structured.sh` | completes the evaluation of the base model with the structured prompt |
 | `sbatch_baselines.sh` | GLiNER-L v2.1 and UniNER-7B-type on the same queries |
+| `make_noedge_data.py` | the training files of the two variants of the structured format: without `EDGE`, and without `EDGE` with `MENTIONS` before `TYPES` (`--invert`), from the structured traces |
+| `sbatch_paired_noedge.sh` | builds a variant, trains its Qwen3-4B-Thinking-2507 student and evaluates it (`VARIANT=noedge_inv` by default, `noedge`) |
 | `sbatch_paired_extra.sh` | follow-up runs (constrained decoding, budget forcing) not reported in the thesis |
-| `modal_app.py` | the same pipeline on Modal (used for SmolLM3-3B and for the larger evaluations) |
+| `modal_app.py` | the same pipeline on Modal, used for SmolLM3-3B (`smol`), Qwen3-8B (`qwen8b`, which in `bfloat16` does not fit in 24 GB on the longest examples), the variant without `EDGE` (`noedge`) and the larger evaluations |
 | `run_docker_paired.sh` | runs one command inside `paired-cot-image` (`build_paired/Dockerfile`) |
 
 The evaluation itself is `../04_evaluation/eval_paired.py`, and the
 comparison with paired bootstrap is `../04_evaluation/compare_paired.py`.
 
-Reading the paired-trace dataset needs an `HF_TOKEN` with access to it, in
-a local `.env` file.
+The paired-trace dataset was built at DISI, University of Bologna
+(`disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1`); a public copy
+is [`structured-cot-ner/pilener-teacher-cot-agreement-v1`](https://huggingface.co/datasets/structured-cot-ner/pilener-teacher-cot-agreement-v1).

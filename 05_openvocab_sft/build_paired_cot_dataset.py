@@ -1,5 +1,5 @@
 """Builds the two SFT files of the free vs structured CoT experiment from the
-paired-trace dataset disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1.
+paired-trace dataset structured-cot-ner/pilener-teacher-cot-agreement-v1.
 
 Each CoT is paired with the prompt it was generated from (free_cot with
 free_prompt, structured_cot with structured_prompt); the target is the
@@ -21,7 +21,7 @@ from pathlib import Path
 
 from datasets import load_dataset
 
-REPO = "disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1"
+REPO = "structured-cot-ner/pilener-teacher-cot-agreement-v1"
 
 
 def main() -> None:

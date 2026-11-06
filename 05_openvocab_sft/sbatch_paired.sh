@@ -1,6 +1,6 @@
 #!/bin/bash
 # Submits the free vs structured CoT experiment (paired-trace dataset
-# disi-unibo-nlp-students/pilener-teacher-cot-agreement-v1) to one node:
+# structured-cot-ner/pilener-teacher-cot-agreement-v1) to one node:
 #
 #   1. prepare: the two training files (build_paired_cot_dataset.py) and the
 #      evaluation sets (build_paired_eval.py: CrossNER, gold types + 1-3

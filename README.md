@@ -9,7 +9,7 @@ organization.
 The thesis asks whether a small language model can learn to **reason before
 extracting named entities**, and whether a **structured** reasoning can be as
 accurate as a free one while being shorter. A large teacher writes the
-reasoning, and LoRA students with at most four billion parameters learn it.
+reasoning, and LoRA students with at most eight billion parameters learn it.
 Every query is a text plus a list of entity types, some of them absent
 (distractors), and the answer is a JSON object with the mentions of each type
 copied verbatim from the text.
@@ -30,8 +30,10 @@ Pile-NER ─▶ 01_extraction ─▶ 02_jury ─▶ 05_openvocab_sft / 03_sft_tr
 
 **Second phase.** The teacher reasons on each query twice: freely, and in a
 structured format of three one-line fields (`TYPES`, `MENTIONS`, `EDGE`).
-Two students are trained on the same queries and answers, one per format
-(Qwen3-4B-Thinking-2507 and SmolLM3-3B), and compared on the same sets.
+For each of Qwen3-4B-Thinking-2507, Qwen3-8B and SmolLM3-3B, two students are
+trained on the same queries and answers, one per format, and compared on the
+same sets. Two variants of the structured format, without `EDGE` and with
+`MENTIONS` before `TYPES`, measure which fields matter.
 
 ## Main result (second phase, exact F1)
 
@@ -43,7 +45,10 @@ Two students are trained on the same queries and answers, one per format
 
 Structured reasoning is learned reliably and is shorter, but it costs one to
 two and a half points of F1, mostly in recall. The same pattern holds for
-SmolLM3-3B.
+Qwen3-8B and SmolLM3-3B. Without `EDGE` and with `MENTIONS` before `TYPES`, the
+structured student is at least as accurate as with the full structure (0.721 /
+0.568 / 0.566) with about 30% fewer reasoning tokens (268 on CrossNER), but
+still below free reasoning out of domain.
 
 ## Repository layout
 
